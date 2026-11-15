@@ -835,7 +835,7 @@ local function equipped_tool()
  local name,data,slot=equipped_item()
  if data and data.Gather then return name,data,slot end
 end
-local skin_ui={selected={},hidden={},links={},catalog=nil,current=nil,applied=nil,next_retry=0}
+local skin_ui={selected={},hidden={},hide_connections={},links={},catalog=nil,current=nil,applied=nil,next_retry=0,forcing=false}
 skin_ui.sync_toggle=toggle(pages.Skins,'Local skin changer','skins_enabled')
 skin_ui.title=label(pages.Skins,'Equip a weapon to browse its skins.',UDim2.new(1,-8,0,34))
 skin_ui.title.TextWrapped=true
@@ -843,11 +843,36 @@ skin_ui.status=label(pages.Skins,'Local visuals only. No inventory changes.',UDi
 skin_ui.status.TextWrapped=true; skin_ui.status.TextYAlignment=Enum.TextYAlignment.Top
 skin_ui.gallery=make('Frame',{BackgroundTransparency=1,Size=UDim2.new(1,-2,0,0)},pages.Skins)
 local function skin_restore()
+ for _,connection in ipairs(skin_ui.hide_connections) do connection:Disconnect() end
+ table.clear(skin_ui.hide_connections)
  if hub.skin_overlay then hub.skin_overlay:Destroy() end
- for part,value in pairs(skin_ui.hidden) do pcall(function() part.LocalTransparencyModifier=value end) end
+ for object,state in pairs(skin_ui.hidden) do
+  for key,value in pairs(state.values) do pcall(function() object[key]=value end) end
+ end
  hub.skin_overlay=nil; hub.skin_model=nil
  table.clear(skin_ui.hidden); table.clear(skin_ui.links)
  skin_ui.applied=nil
+end
+local function skin_hide(object)
+ if skin_ui.hidden[object] then return end
+ local values
+ if object:IsA('BasePart') then values={Transparency=1,LocalTransparencyModifier=1}
+ elseif object:IsA('Decal') or object:IsA('Texture') then values={Transparency=1}
+ elseif object:IsA('SurfaceGui') or object:IsA('BillboardGui') then values={Enabled=false}
+ else return end
+ local state={values={},forced=values}
+ skin_ui.hidden[object]=state
+ for key,value in pairs(values) do
+  state.values[key]=object[key]
+  table.insert(skin_ui.hide_connections,object:GetPropertyChangedSignal(key):Connect(function()
+   if skin_ui.forcing or not hub.alive or not hub.skin_model then return end
+   if object[key]~=value then
+    state.values[key]=object[key]
+    skin_ui.forcing=true; object[key]=value; skin_ui.forcing=false
+   end
+  end))
+  skin_ui.forcing=true; object[key]=value; skin_ui.forcing=false
+ end
 end
 local function skin_source(name,skin)
  local system=RS:FindFirstChild('GunSystem')
@@ -866,19 +891,7 @@ local function skin_live(name)
    if not cosmetic and object:IsA('Model') and object.Name==name and (object:FindFirstChild('GunComponents') or object:FindFirstChild('ToolComponents')) then return object end
  end
 end
-local function skin_relative(object,root)
- local names={}
- while object and object~=root do table.insert(names,1,object.Name); object=object.Parent end
- return table.concat(names,'/')
-end
 local function skin_apply(live,source)
- local paths,names={},{}
- for _,part in ipairs(live:GetDescendants()) do
-  if part:IsA('BasePart') then
-   paths[skin_relative(part,live)]=part
-   if names[part.Name]==nil then names[part.Name]=part else names[part.Name]=false end
-  end
- end
  local function grip(model)
   local components=model:FindFirstChild('GunComponents') or model:FindFirstChild('ToolComponents')
   return components and (components:FindFirstChild('Handle') or components:FindFirstChild('Barrel')) or model.PrimaryPart or model:FindFirstChildWhichIsA('BasePart',true)
@@ -893,9 +906,9 @@ local function skin_apply(live,source)
  local visible_count=0
  for _,object in ipairs(cosmetic:GetDescendants()) do
   if object:IsA('BasePart') then
-   local target=paths[skin_relative(object,cosmetic)] or names[object.Name]
-   local anchor=target or live_grip
-   local offset=target and CFrame.identity or source_grip.CFrame:ToObjectSpace(object.CFrame)
+   -- Preserve the skin's complete authored layout, not per-name live part poses.
+   local anchor=live_grip
+   local offset=source_grip.CFrame:ToObjectSpace(object.CFrame)
    object.Anchored=true; object.CanCollide=false; object.CanTouch=false; object.CanQuery=false; object.CastShadow=false
    object.LocalTransparencyModifier=0
    if object.Transparency<1 then visible_count=visible_count+1 end
@@ -906,11 +919,13 @@ local function skin_apply(live,source)
  end
  if visible_count==0 then error('Skin has no visible geometry; original model kept visible') end
  for _,link in ipairs(links) do link.visual.CFrame=link.anchor.CFrame*link.offset end
- cosmetic.Parent=workspace.CurrentCamera
  skin_ui.links=links; hub.skin_model=live
- for _,part in ipairs(live:GetDescendants()) do
-  if part:IsA('BasePart') then skin_ui.hidden[part]=part.LocalTransparencyModifier; part.LocalTransparencyModifier=1 end
- end
+ for _,object in ipairs(live:GetDescendants()) do skin_hide(object) end
+ table.insert(skin_ui.hide_connections,live.DescendantAdded:Connect(function(object)
+  if hub.skin_model==live then skin_hide(object) end
+ end))
+ -- Publish the replacement only after all original geometry has been hidden.
+ cosmetic.Parent=workspace.CurrentCamera
  return #links
 end
 local function skin_gallery(name,data)
@@ -967,7 +982,7 @@ connect(Run.Heartbeat,function(dt)
  local ok,count=pcall(skin_apply,live,source)
  if ok then
   skin_ui.applied=live
-   skin_ui.status.Text=selected..' / cosmetic parts: '..count..'\nFull skin model; weapon chams excluded.'
+    skin_ui.status.Text=selected..' / cosmetic parts: '..count..'\nOriginal hidden; rigid skin layout. Weapon chams excluded.'
  else skin_restore(); skin_ui.next_retry=os.clock()+2; skin_ui.status.Text='Skin error: '..tostring(count) end
 end)
 skin_ui.render_name='OcelSkinVisual_'..tostring(math.floor(os.clock()*1e6))
@@ -975,10 +990,14 @@ Run:BindToRenderStep(skin_ui.render_name,Enum.RenderPriority.Last.Value,function
  if not skin_ui.applied then return end
  local camera=workspace.CurrentCamera
  if not cfg.skins_enabled or not camera or not skin_ui.applied:IsDescendantOf(camera) then skin_restore(); return end
- for _,part in ipairs(skin_ui.applied:GetDescendants()) do
-  if part:IsA('BasePart') then
-   if skin_ui.hidden[part]==nil then skin_ui.hidden[part]=part.LocalTransparencyModifier end
-   part.LocalTransparencyModifier=1
+ for object,state in pairs(skin_ui.hidden) do
+  if object.Parent then
+   for key,value in pairs(state.forced) do
+    if object[key]~=value then
+     state.values[key]=object[key]
+     skin_ui.forcing=true; object[key]=value; skin_ui.forcing=false
+    end
+   end
   end
  end
  for _,link in ipairs(skin_ui.links) do
