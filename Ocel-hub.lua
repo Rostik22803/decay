@@ -23,7 +23,7 @@ local cfg = {boxes=true, skeleton=true, enemies=false, arms=false, weapon=false,
  magic_range=12, aim_mode='Instant', aim_lead=0, cloth=false,
  cloth_color=Color3.fromRGB(235,225,175), magic_tools=false, tools_range=12, tools_auto=false,
  esp_names=true, esp_distance=true, esp_health=true, esp_weapon=true, esp_visibility=true,
- potato=false}
+ potato=false, bots=true}
 local function connect(signal, fn)
  local c = signal:Connect(fn); table.insert(hub.connections,c); return c
 end
@@ -147,7 +147,7 @@ cycle(v,'Box style','box_style',{'Corners','Rectangle'})
 slider(v,'Line thickness','width',1,4)
 slider(v,'Draw distance','distance',100,3000)
 slider(v,'Tracer lifetime','lifetime',.1,3)
-for _,entry in ipairs({{'Player names','esp_names'},{'Player distance','esp_distance'},{'Health bar','esp_health'},{'Held weapon','esp_weapon'},{'Visible green / hidden red','esp_visibility'},{'Potato graphics','potato'}}) do toggle(v,entry[1],entry[2]) end
+for _,entry in ipairs({{'Player names','esp_names'},{'Player distance','esp_distance'},{'Health bar','esp_health'},{'Held weapon','esp_weapon'},{'Bot ESP','bots'},{'Visible green / hidden red','esp_visibility'},{'Potato graphics','potato'}}) do toggle(v,entry[1],entry[2]) end
 local materials={'Neon','ForceField','SmoothPlastic','Glass','Metal','Foil'}
 local chams=pages.Chams
 for _,entry in ipairs({{'Enemies','enemies','enemy'},{'Hands','arms','arms'},{'Weapon','weapon','weapon'}}) do
@@ -201,6 +201,19 @@ local function circle(parent)
 end
 local fov_circle=circle(overlay)
 local records={}
+local bots={}
+local function character_root(c)
+ return c and (c:FindFirstChild('HumanoidRootPart') or c.PrimaryPart or c:FindFirstChild('Torso') or c:FindFirstChild('Head'))
+end
+local function index_bot(object)
+ local model=object:IsA('Model') and object or object:IsA('Humanoid') and object.Parent
+ if model and model:IsA('Model') and model:FindFirstChildOfClass('Humanoid') and not Players:GetPlayerFromCharacter(model) then
+  local camera=workspace.CurrentCamera
+  if not camera or not model:IsDescendantOf(camera) then
+   bots[model]=bots[model] or {Character=model,Name=model.Name,DisplayName=model.Name,is_bot=true}
+  end
+ end
+end
 local function record(player)
  local r={lines={},used=0,root=make('Frame',{Size=UDim2.fromScale(1,1),BackgroundTransparency=1},overlay)}
  r.head=circle(r.root)
@@ -227,8 +240,8 @@ local function segment(r,camera,p,q)
  if ok and ok2 then line(r,a,b,r.color or cfg.esp_color) end
 end
 local function eligible(p,camera)
- local c=p.Character; local h=c and c:FindFirstChildOfClass('Humanoid'); local root=c and c:FindFirstChild('HumanoidRootPart')
- return p~=me and h and h.Health>0 and root and (root.Position-camera.CFrame.Position).Magnitude<=cfg.distance and not (cfg.team and me.Team~=nil and p.Team==me.Team)
+ local c=p.Character; local h=c and c:FindFirstChildOfClass('Humanoid'); local root=character_root(c)
+ return p~=me and h and h.Health>0 and root and (root.Position-camera.CFrame.Position).Magnitude<=cfg.distance and not (type(p)~='table' and cfg.team and me.Team~=nil and p.Team==me.Team)
 end
 local function clear_path(camera,part)
  local params=RaycastParams.new(); params.FilterType=Enum.RaycastFilterType.Exclude
@@ -308,12 +321,12 @@ end
 local function player_details(r,player,camera,c,min,max)
  if not min then return end
  local mid=(min.X+max.X)*.5
- r.name.Visible=cfg.esp_names; r.name.Text=player.DisplayName..' (@'..player.Name..')'
+ r.name.Visible=cfg.esp_names; r.name.Text=type(player)=='table' and ('[BOT] '..c.Name) or (player.DisplayName..' (@'..player.Name..')')
  r.name.Position=UDim2.fromOffset(mid,min.Y-3); r.name.TextColor3=r.color
  local details={}
  if cfg.esp_distance then
   local origin=me.Character and me.Character:FindFirstChild('HumanoidRootPart')
-  table.insert(details,tostring(math.floor((c.HumanoidRootPart.Position-(origin and origin.Position or camera.CFrame.Position)).Magnitude))..' st')
+  table.insert(details,tostring(math.floor((character_root(c).Position-(origin and origin.Position or camera.CFrame.Position)).Magnitude))..' st')
  end
  if cfg.esp_weapon then table.insert(details,held_weapon(c)) end
  r.details.Visible=#details>0; r.details.Text=table.concat(details,'\n')
@@ -417,13 +430,21 @@ Run:BindToRenderStep(render_name,Enum.RenderPriority.Camera.Value+2,function(dt)
  fit(); local center=camera.ViewportSize*.5
  fov_circle.Visible=cfg.aim or cfg.silent; fov_circle.Position=UDim2.fromOffset(center.X-cfg.fov,center.Y-cfg.fov); fov_circle.Size=UDim2.fromOffset(cfg.fov*2,cfg.fov*2)
  local best=cfg.fov; target=nil
- for _,p in ipairs(Players:GetPlayers()) do
+ local subjects=Players:GetPlayers()
+ for model,bot in pairs(bots) do
+  if not model:IsDescendantOf(workspace) or Players:GetPlayerFromCharacter(model) then
+   local r=records[bot]; if r then r.root:Destroy(); r.highlight:Destroy(); records[bot]=nil end
+   bots[model]=nil
+  elseif cfg.bots then table.insert(subjects,bot)
+  elseif records[bot] then records[bot].root.Visible=false; records[bot].highlight.Enabled=false end
+ end
+ for _,p in ipairs(subjects) do
   if p~=me then
-   local r=records[p] or record(p); r.used=0; r.head.Visible=false; r.highlight.Enabled=false
+   local r=records[p] or record(p); r.root.Visible=true; r.used=0; r.head.Visible=false; r.highlight.Enabled=false
    r.name.Visible=false; r.details.Visible=false; r.health.Visible=false
    if eligible(p,camera) then
      local c=p.Character; local part=c:FindFirstChild(cfg.part)
-     local seen=clear_path(camera,c:FindFirstChild('Head') or c.HumanoidRootPart)
+     local seen=clear_path(camera,c:FindFirstChild('Head') or character_root(c))
      r.color=cfg.esp_visibility and (seen and Color3.fromRGB(65,235,105) or Color3.fromRGB(245,65,65)) or cfg.esp_color
     r.highlight.Adornee=c; r.highlight.Enabled=cfg.enemies; r.highlight.FillColor=cfg.enemy_color; r.highlight.OutlineColor=cfg.enemy_color; r.highlight.FillTransparency=cfg.enemy_opacity; r.highlight.OutlineTransparency=cfg.outline_opacity; r.highlight.DepthMode=Enum.HighlightDepthMode[cfg.depth]
      if cfg.esp_visibility then r.highlight.FillColor=r.color; r.highlight.OutlineColor=r.color end
@@ -431,7 +452,7 @@ Run:BindToRenderStep(render_name,Enum.RenderPriority.Camera.Value+2,function(dt)
      if cfg.boxes and min then boxes(r,camera,c,min,max) end
      if cfg.skeleton then skeleton(r,camera,c) end
      player_details(r,p,camera,c,min,max)
-    if part then local point,on=project(camera,part.Position); local dist=(point-center).Magnitude
+     if part and type(p)~='table' then local point,on=project(camera,part.Position); local dist=(point-center).Magnitude
      if on and dist<best and (not cfg.visible or clear_path(camera,part)) then best=dist; target=part end
     end
    end
@@ -522,10 +543,12 @@ local function resource_kind(model)
 end
 local function index_resource(object)
  if not hub.alive or not object:IsDescendantOf(workspace) then return end
+ index_bot(object)
  local kind=resource_kind(object)
  if kind then resources[object]=kind end
 end
 connect(workspace.DescendantAdded,function(object)
+ if object:IsA('Humanoid') then resource_pending[object]=true end
  if object:IsA('Model') or object:IsA('BasePart') then resource_pending[object]=true end
  local parent=object.Parent
  if parent and parent:IsA('Model') then resource_pending[parent]=true end
@@ -585,11 +608,16 @@ local item_data
 pcall(function() item_data=require(RS.ItemData).Items end)
 local selected_slot
 local function equipped_item()
- if not selected_slot or not selected_slot.Parent then
+ if not selected_slot or not selected_slot.Parent or not selected_slot.Value then
   local player_gui=me:FindFirstChild('PlayerGui')
-  local hotbar=player_gui and player_gui:FindFirstChild('Hotbar',true)
-  selected_slot=hotbar and hotbar:FindFirstChild('SelectedSlot')
+  selected_slot=nil
+  if player_gui then
+   for _,object in ipairs(player_gui:GetDescendants()) do
+    if object.Name=='SelectedSlot' and object:IsA('ObjectValue') and object.Value and object.Value:FindFirstChild('ItemName') then selected_slot=object; break end
+   end
+  end
  end
+ if not item_data then pcall(function() item_data=require(RS.ItemData).Items end) end
  local slot=selected_slot and selected_slot:IsA('ObjectValue') and selected_slot.Value
  local item=slot and slot:FindFirstChild('ItemName')
  local data=item and item_data and item_data[item.Value]
@@ -638,12 +666,14 @@ end
 local farm_track
 local farm_busy=false
 local next_farm=0
+local combat_pending=false
 local function stop_farm_animation()
  if farm_track then pcall(function() farm_track:Stop(.1); farm_track:Destroy() end); farm_track=nil end
 end
 local function farm_tick()
  if not cfg.auto_farm then farm_status.Text='Auto farm OFF. Equip a gathering tool. No movement.'; stop_farm_animation(); return end
  if panel.Visible then farm_status.Text='Paused while menu is open.'; return end
+ if combat_pending and cfg.magic_tools and cfg.tools_auto then farm_status.Text='Paused: Magic Tools has a target.'; return end
  if farm_busy or os.clock()<next_farm then return end
  local character=me.Character
  local head=character and character:FindFirstChild('Head')
@@ -804,20 +834,7 @@ for _,module in ipairs(game:GetDescendants()) do
     return Ray.new(ray.Origin,delta.Unit),{Part=chosen,Position=chosen.Position}
    end
    exports.Check=extended_check
-   if type(exports.Hit)=='function' then
-    local original_hit=exports.Hit
-    local function quiet_magic_hit(remote,tool_name,...)
-     if hub.alive and cfg.magic_tools and (tool_name=='Rock' or tool_name=='Wooden Spear') then
-      local ray,hit=exports.Check(tool_name)
-      remote:FireServer(ray.Direction.Unit,tool_name,hit)
-      return ray,hit
-     end
-     return original_hit(remote,tool_name,...)
-    end
-    exports.Hit=quiet_magic_hit
-    table.insert(hub.restores,function() if exports.Hit==quiet_magic_hit then exports.Hit=original_hit end end)
-    melee_attack=exports
-   end
+   if type(exports.Hit)=='function' then melee_attack=exports end
    table.insert(hub.restores,function() if exports.Check==extended_check then exports.Check=original end end)
    melee_count=melee_count+1
   end
@@ -830,11 +847,11 @@ connect(Run.Heartbeat,function(dt)
  tools_clock=tools_clock+dt
  if tools_clock<.1 then return end
  tools_clock=0
+ combat_pending=false
  if not cfg.tools_auto then return end
  if not cfg.magic_tools then tools_status.Text=tools_summary..'\nAuto attack paused: enable Magic Tools.'; return end
  if panel.Visible then tools_status.Text=tools_summary..'\nAuto attack paused: menu open.'; return end
  if not melee_attack then tools_status.Text='Auto attack unavailable: MeleeClient.Hit missing.'; return end
- if os.clock()<next_farm or farm_busy then return end
  local name,data=equipped_item()
  if name~='Rock' and name~='Wooden Spear' then tools_status.Text=tools_summary..'\nSelect Rock or Wooden Spear in the hotbar.'; return end
  local character=me.Character; local humanoid=character and character:FindFirstChildOfClass('Humanoid')
@@ -851,6 +868,8 @@ connect(Run.Heartbeat,function(dt)
   if not player or not eligible(player,camera) then tools_status.Text=tools_summary..'\nWaiting for an enemy in range / FOV.'; return end
   local point,on=project(camera,part.Position)
   if not on or (point-camera.ViewportSize*.5).Magnitude>cfg.fov or not clear_path(camera,part) then return end
+  combat_pending=true
+  if os.clock()<next_farm or farm_busy then return end
   local info=data.ToolInfo
   next_farm=os.clock()+math.max(.35,info.HitInterval or ((info.PlayTime or .5)+(info.WaitTime or .25)))
   local head=character:FindFirstChild('Head')
