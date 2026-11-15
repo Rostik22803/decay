@@ -23,7 +23,8 @@ local cfg = {boxes=true, skeleton=true, enemies=false, arms=false, weapon=false,
  magic_range=12, aim_mode='Instant', aim_lead=0, cloth=false,
  cloth_color=Color3.fromRGB(235,225,175), magic_tools=false, tools_range=12, tools_auto=false,
  esp_names=true, esp_distance=true, esp_health=true, esp_weapon=true, esp_visibility=true,
- potato=false, bots=true, sleepers=true, esp_armor=true, potato_distance=300}
+ potato=false, bots=true, sleepers=true, esp_armor=true, potato_distance=300,
+ esp_icons=true, icon_size=32}
 local function connect(signal, fn)
  local c = signal:Connect(fn); table.insert(hub.connections,c); return c
 end
@@ -149,6 +150,8 @@ slider(v,'Draw distance','distance',100,3000)
 slider(v,'Tracer lifetime','lifetime',.1,3)
 for _,entry in ipairs({{'Player names','esp_names'},{'Player distance','esp_distance'},{'Health bar','esp_health'},{'Held weapon','esp_weapon'},{'Equipped armor','esp_armor'},{'Sleeper ESP','sleepers'},{'Bot ESP / scientists','bots'},{'Visible green / hidden red','esp_visibility'},{'Potato graphics','potato'}}) do toggle(v,entry[1],entry[2]) end
 slider(v,'Potato world draw distance','potato_distance',100,1000)
+toggle(v,'Equipment pictures','esp_icons')
+slider(v,'Equipment picture size','icon_size',22,46)
 local materials={'Neon','ForceField','SmoothPlastic','Glass','Metal','Foil'}
 local chams=pages.Chams
 for _,entry in ipairs({{'Enemies','enemies','enemy'},{'Hands','arms','arms'},{'Weapon','weapon','weapon'}}) do
@@ -256,6 +259,8 @@ local function record(player)
  for _,text in ipairs({r.name,r.details}) do text.TextXAlignment=Enum.TextXAlignment.Center; text.TextStrokeTransparency=.1; text.TextSize=12; text.Visible=false end
  r.health=make('Frame',{BackgroundColor3=Color3.fromRGB(15,15,15),BorderSizePixel=0,Visible=false},r.root)
  r.health_fill=make('Frame',{AnchorPoint=Vector2.new(0,1),Position=UDim2.fromScale(0,1),BorderSizePixel=0},r.health)
+ r.icon_root=make('Frame',{BackgroundTransparency=1,AnchorPoint=Vector2.new(.5,0),Visible=false},r.root)
+ r.icons={}
  records[player]=r; return r
 end
 local function line(r,p,q,color)
@@ -342,11 +347,35 @@ local function boxes(r,camera,c,min,max)
 end
 local equipment_catalog
 pcall(function() equipment_catalog=require(RS.ItemData).Items end)
+local equipment_names,equipment_ids={},{}
+local function normalized_item(name)
+ return name:lower():gsub('%b()',''):gsub('[^%w]','')
+end
+if equipment_catalog then
+ for name,data in pairs(equipment_catalog) do
+  if type(name)=='string' and type(data)=='table' then
+   local normalized=normalized_item(name)
+   if equipment_names[normalized]~=nil and equipment_names[normalized]~=name then equipment_names[normalized]=false else equipment_names[normalized]=name end
+   if data.ItemId then equipment_ids[tostring(data.ItemId)]=name end
+  end
+ end
+end
+local function canonical_item(value)
+ if type(value)=='number' then return equipment_ids[tostring(value)] end
+ if type(value)~='string' then return end
+ if equipment_catalog and equipment_catalog[value] then return value end
+ local normalized=normalized_item(value)
+ return equipment_ids[value] or equipment_names[normalized] or equipment_names[normalized:gsub('model$','')] or nil
+end
 local equipment_assets={}
 local function mesh_key(object)
  if object:IsA('MeshPart') or object:IsA('SpecialMesh') then
   local id=object.MeshId
-  if id~='' then return id:match('%d+') or id end
+  if id~='' then return 'mesh:'..(id:match('%d+') or id) end
+ elseif object:IsA('Shirt') then
+  local id=object.ShirtTemplate; if id~='' then return 'shirt:'..(id:match('%d+') or id) end
+ elseif object:IsA('Pants') then
+  local id=object.PantsTemplate; if id~='' then return 'pants:'..(id:match('%d+') or id) end
  end
 end
 task.spawn(function()
@@ -357,10 +386,11 @@ task.spawn(function()
   if key then
    local ancestor=object
    while ancestor and ancestor~=RS do
-    local data=equipment_catalog[ancestor.Name]
+    local name=canonical_item(ancestor.Name)
+    local data=name and equipment_catalog[name]
     if data and (data.ArmorSlot or data.ToolInfo or data.Gather or data.BulletType or data.Type=='Gun' or data.Type=='Tool' or data.Type=='Clothes') then
      local existing=equipment_assets[key]
-     if existing==nil then equipment_assets[key]=ancestor.Name elseif existing~=ancestor.Name then equipment_assets[key]=false end
+     if existing==nil then equipment_assets[key]=name elseif existing~=name then equipment_assets[key]=false end
      break
     end
     ancestor=ancestor.Parent
@@ -373,11 +403,12 @@ local equipment_cache=setmetatable({},{__mode='k'})
 local function equipment(character)
  local cached=equipment_cache[character]
  if cached and os.clock()-cached.time<.4 then return cached end
- local result={time=os.clock(),weapon='Unknown',armor='Unknown'}
+ local result={time=os.clock(),weapon='Unknown',armor='Unknown',armor_items={}}
  local armor,seen={},{}
  local weapon_score=0
  local function consider(name,score)
-  if type(name)~='string' then return end
+  name=canonical_item(name)
+  if not name then return end
   local lower=name:lower()
   if lower=='hands' or lower=='arms' or lower=='fists' or lower=='none' then return end
   local data=equipment_catalog and equipment_catalog[name]
@@ -389,22 +420,64 @@ local function equipment(character)
   end
  end
  local function metadata(object)
-  for _,key in ipairs({'ItemName','EquippedItem','EquippedWeapon','CurrentWeapon','ToolName','ArmorName'}) do consider(object:GetAttribute(key),5) end
+  for _,key in ipairs({'ItemName','EquippedItem','EquippedWeapon','CurrentWeapon','ToolName','ArmorName','ItemId','ItemID','WeaponId','ArmorId'}) do consider(object:GetAttribute(key),5) end
+ end
+ local function worn_object(object)
+  local parent=object.Parent
+  while parent and parent~=character do
+   local name=parent.Name:lower()
+   if name=='inventory' or name=='hotbar' or name=='backpack' or name=='storage' or name=='loot' or name=='backpackitems' then return false end
+   parent=parent.Parent
+  end
+  return true
  end
  metadata(character)
  for _,object in ipairs(character:GetDescendants()) do
+  if worn_object(object) then
   if object:IsA('Tool') or object:IsA('Model') or object:IsA('Accessory') or object:IsA('Folder') then metadata(object); consider(object.Name,object:IsA('Tool') and 4 or 2) end
-  if object:IsA('StringValue') and (object.Name=='ItemName' or object.Name=='WeaponName' or object.Name=='ArmorName') then consider(object.Value,6) end
+  if object:IsA('ValueBase') and (object.Name=='ItemName' or object.Name=='WeaponName' or object.Name=='ArmorName' or object.Name=='ItemId' or object.Name=='WeaponId' or object.Name=='ArmorId') then
+   local value=object.Value
+   if typeof(value)=='Instance' then metadata(value); consider(value.Name,6) else consider(value,6) end
+  end
   local key=mesh_key(object)
   if key and equipment_assets[key] then consider(equipment_assets[key],1) end
+  end
  end
- if #armor>0 then table.sort(armor); result.armor=table.concat(armor,', ') end
+ if #armor>0 then table.sort(armor); result.armor=table.concat(armor,', '); result.armor_items=armor end
  equipment_cache[character]=result; return result
+end
+local function equipment_pictures(r,gear,mid,y)
+ local items={}
+ if cfg.esp_weapon and gear.weapon~='Unknown' then table.insert(items,gear.weapon) end
+ if cfg.esp_armor then for _,name in ipairs(gear.armor_items) do table.insert(items,name) end end
+ local count=math.min(8,#items)
+ r.icon_root.Visible=cfg.esp_icons and count>0
+ if not r.icon_root.Visible then return end
+ local size=math.floor(cfg.icon_size)
+ r.icon_root.Position=UDim2.fromOffset(mid,y); r.icon_root.Size=UDim2.fromOffset(count*(size+4)-4,size+18)
+ for i=1,count do
+  local card=r.icons[i]
+  if not card then
+   local frame=make('Frame',{BackgroundColor3=Color3.fromRGB(18,18,21),BackgroundTransparency=.15,BorderSizePixel=0},r.icon_root)
+   make('UICorner',{CornerRadius=UDim.new(0,5)},frame)
+   local image=make('ImageLabel',{BackgroundTransparency=1,ScaleType=Enum.ScaleType.Fit},frame)
+   local caption=label(frame,'',UDim2.new()); caption.TextSize=9; caption.TextXAlignment=Enum.TextXAlignment.Center; caption.TextTruncate=Enum.TextTruncate.AtEnd
+   card={frame=frame,image=image,caption=caption}; r.icons[i]=card
+  end
+  local name=items[i]; local data=equipment_catalog[name]
+  local image=data and (data.Image or data.Icon or data.ImageId)
+  if type(image)=='number' then image='rbxassetid://'..image end
+  if type(image)=='string' and image:match('^%d+$') then image='rbxassetid://'..image end
+  card.frame.Visible=true; card.frame.Position=UDim2.fromOffset((i-1)*(size+4),0); card.frame.Size=UDim2.fromOffset(size,size+18)
+  card.image.Size=UDim2.fromOffset(size,size); card.image.Image=type(image)=='string' and image or ''
+  card.caption.Position=UDim2.fromOffset(1,size); card.caption.Size=UDim2.fromOffset(size-2,16); card.caption.Text=name
+ end
+ for i=count+1,#r.icons do r.icons[i].frame.Visible=false end
 end
 local function player_details(r,player,camera,c,min,max)
  if not min then return end
  local mid=(min.X+max.X)*.5
- r.name.Visible=cfg.esp_names; r.name.Text=type(player)=='table' and ((player.kind=='sleeper' and '[SLEEPER] ' or '[BOT] ')..c.Name) or (player.DisplayName..' (@'..player.Name..')')
+ r.name.Visible=cfg.esp_names; r.name.Text=type(player)=='table' and (player.kind=='sleeper' and ('СЛИПЕР · '..c.Name) or 'БОТ') or (player.DisplayName..' (@'..player.Name..')')
  r.name.Position=UDim2.fromOffset(mid,min.Y-3); r.name.TextColor3=r.color
  local details={}
  if cfg.esp_distance then
@@ -415,6 +488,11 @@ local function player_details(r,player,camera,c,min,max)
   local gear=equipment(c)
   if cfg.esp_weapon then table.insert(details,'Weapon: '..gear.weapon) end
   if cfg.esp_armor then table.insert(details,'Armor: '..gear.armor) end
+  local rows=0
+  for _,text in ipairs(details) do rows=rows+math.max(1,math.ceil(#text/38)) end
+  local height=math.max(32,rows*14)
+  r.details.Size=UDim2.fromOffset(280,height)
+  equipment_pictures(r,gear,mid,max.Y+height+8)
  end
  r.details.Visible=#details>0; r.details.Text=table.concat(details,'\n')
  r.details.Position=UDim2.fromOffset(mid,max.Y+3); r.details.TextColor3=r.color
@@ -528,7 +606,7 @@ Run:BindToRenderStep(render_name,Enum.RenderPriority.Camera.Value+2,function(dt)
  for _,p in ipairs(subjects) do
   if p~=me then
    local r=records[p] or record(p); r.root.Visible=true; r.used=0; r.head.Visible=false; r.highlight.Enabled=false
-   r.name.Visible=false; r.details.Visible=false; r.health.Visible=false
+   r.name.Visible=false; r.details.Visible=false; r.health.Visible=false; r.icon_root.Visible=false
    if eligible(p,camera) then
      local c=p.Character; local part=c:FindFirstChild(cfg.part)
      local seen=clear_path(camera,c:FindFirstChild('Head') or character_root(c))
