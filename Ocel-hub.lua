@@ -23,7 +23,7 @@ local cfg = {boxes=true, skeleton=true, enemies=false, arms=false, weapon=false,
  magic_range=12, aim_mode='Instant', aim_lead=0, cloth=false,
  cloth_color=Color3.fromRGB(235,225,175), magic_tools=false, tools_range=12, tools_auto=false,
  esp_names=true, esp_distance=true, esp_health=true, esp_weapon=true, esp_visibility=true,
- potato=false, bots=true}
+ potato=false, bots=true, sleepers=true, esp_armor=true, potato_distance=300}
 local function connect(signal, fn)
  local c = signal:Connect(fn); table.insert(hub.connections,c); return c
 end
@@ -147,7 +147,8 @@ cycle(v,'Box style','box_style',{'Corners','Rectangle'})
 slider(v,'Line thickness','width',1,4)
 slider(v,'Draw distance','distance',100,3000)
 slider(v,'Tracer lifetime','lifetime',.1,3)
-for _,entry in ipairs({{'Player names','esp_names'},{'Player distance','esp_distance'},{'Health bar','esp_health'},{'Held weapon','esp_weapon'},{'Bot ESP','bots'},{'Visible green / hidden red','esp_visibility'},{'Potato graphics','potato'}}) do toggle(v,entry[1],entry[2]) end
+for _,entry in ipairs({{'Player names','esp_names'},{'Player distance','esp_distance'},{'Health bar','esp_health'},{'Held weapon','esp_weapon'},{'Equipped armor','esp_armor'},{'Sleeper ESP','sleepers'},{'Bot ESP / scientists','bots'},{'Visible green / hidden red','esp_visibility'},{'Potato graphics','potato'}}) do toggle(v,entry[1],entry[2]) end
+slider(v,'Potato world draw distance','potato_distance',100,1000)
 local materials={'Neon','ForceField','SmoothPlastic','Glass','Metal','Foil'}
 local chams=pages.Chams
 for _,entry in ipairs({{'Enemies','enemies','enemy'},{'Hands','arms','arms'},{'Weapon','weapon','weapon'}}) do
@@ -202,15 +203,47 @@ end
 local fov_circle=circle(overlay)
 local records={}
 local bots={}
+local Collection=game:GetService('CollectionService')
+local function numeric_state(c,key)
+ local attr=c:GetAttribute(key)
+ if type(attr)=='number' then return attr end
+ local value=c:FindFirstChild(key)
+ if value and (value:IsA('NumberValue') or value:IsA('IntValue')) then return value.Value end
+end
+local function character_health(c)
+ local h=c:FindFirstChildOfClass('Humanoid')
+ if h then return h.Health,h.MaxHealth end
+ return numeric_state(c,'Health'),numeric_state(c,'MaxHealth')
+end
 local function character_root(c)
- return c and (c:FindFirstChild('HumanoidRootPart') or c.PrimaryPart or c:FindFirstChild('Torso') or c:FindFirstChild('Head'))
+ return c and (c:FindFirstChild('HumanoidRootPart') or c.PrimaryPart or c:FindFirstChild('Torso') or c:FindFirstChild('Head') or c:FindFirstChildWhichIsA('BasePart',true))
+end
+local function npc_kind(model)
+ local object=model
+ local npc=false
+ while object and object~=workspace do
+  local name=object.Name:lower()
+  if name:find('sleeper') or object:GetAttribute('Sleeping')==true or object:GetAttribute('Sleeper')==true then return 'sleeper' end
+  if name:find('scientist') or name:find('bandit') or name=='npc' or name=='npcs' or name=='bots' then npc=true end
+  object=object.Parent
+ end
+ for _,tag in ipairs(Collection:GetTags(model)) do
+  local lower=tag:lower()
+  if lower:find('sleeper') then return 'sleeper' end
+  if lower:find('npc') or lower:find('scientist') or lower:find('bot') then npc=true end
+ end
+ if npc or model:GetAttribute('NPC') or model:GetAttribute('NPCType') or model:GetAttribute('AIType') then return 'bot' end
+ -- Unknown humanoids are not silently labelled as scientists.
 end
 local function index_bot(object)
- local model=object:IsA('Model') and object or object:IsA('Humanoid') and object.Parent
- if model and model:IsA('Model') and model:FindFirstChildOfClass('Humanoid') and not Players:GetPlayerFromCharacter(model) then
+ local model=object:IsA('Model') and object or object.Parent
+ if model and model:IsA('Model') and not Players:GetPlayerFromCharacter(model) then
   local camera=workspace.CurrentCamera
-  if not camera or not model:IsDescendantOf(camera) then
-   bots[model]=bots[model] or {Character=model,Name=model.Name,DisplayName=model.Name,is_bot=true}
+  local kind=npc_kind(model)
+  local health=character_health(model)
+  if kind and character_root(model) and (kind=='sleeper' or health~=nil or model:GetAttribute('Flesh')) and (not camera or not model:IsDescendantOf(camera)) then
+   local entry=bots[model] or {Character=model,Name=model.Name,DisplayName=model.Name,is_bot=true}
+   entry.kind=kind; bots[model]=entry
   end
  end
 end
@@ -219,7 +252,7 @@ local function record(player)
  r.head=circle(r.root)
  r.highlight=make('Highlight',{Enabled=false,Name='OcelEnemy'},gui)
  r.name=label(r.root,'',UDim2.fromOffset(240,18)); r.name.AnchorPoint=Vector2.new(.5,1)
- r.details=label(r.root,'',UDim2.fromOffset(240,32)); r.details.AnchorPoint=Vector2.new(.5,0)
+ r.details=label(r.root,'',UDim2.fromOffset(280,72)); r.details.AnchorPoint=Vector2.new(.5,0); r.details.TextYAlignment=Enum.TextYAlignment.Top; r.details.TextWrapped=true
  for _,text in ipairs({r.name,r.details}) do text.TextXAlignment=Enum.TextXAlignment.Center; text.TextStrokeTransparency=.1; text.TextSize=12; text.Visible=false end
  r.health=make('Frame',{BackgroundColor3=Color3.fromRGB(15,15,15),BorderSizePixel=0,Visible=false},r.root)
  r.health_fill=make('Frame',{AnchorPoint=Vector2.new(0,1),Position=UDim2.fromScale(0,1),BorderSizePixel=0},r.health)
@@ -240,8 +273,9 @@ local function segment(r,camera,p,q)
  if ok and ok2 then line(r,a,b,r.color or cfg.esp_color) end
 end
 local function eligible(p,camera)
- local c=p.Character; local h=c and c:FindFirstChildOfClass('Humanoid'); local root=character_root(c)
- return p~=me and h and h.Health>0 and root and (root.Position-camera.CFrame.Position).Magnitude<=cfg.distance and not (type(p)~='table' and cfg.team and me.Team~=nil and p.Team==me.Team)
+ local c=p.Character; local health=c and character_health(c); local root=character_root(c)
+ local alive=c and c:GetAttribute('Dead')~=true and (health and health>0 or health==nil and type(p)=='table')
+ return p~=me and alive and root and (root.Position-camera.CFrame.Position).Magnitude<=cfg.distance and not (type(p)~='table' and cfg.team and me.Team~=nil and p.Team==me.Team)
 end
 local function clear_path(camera,part)
  local params=RaycastParams.new(); params.FilterType=Enum.RaycastFilterType.Exclude
@@ -306,35 +340,88 @@ local function boxes(r,camera,c,min,max)
   end
  end
 end
-local function held_weapon(character)
- local tool=character:FindFirstChildOfClass('Tool')
- if tool then return tool.Name end
- for _,key in ipairs({'EquippedItem','EquippedWeapon','CurrentWeapon','ToolName'}) do
-  local value=character:GetAttribute(key)
-  if type(value)=='string' and value~='' then return value end
+local equipment_catalog
+pcall(function() equipment_catalog=require(RS.ItemData).Items end)
+local equipment_assets={}
+local function mesh_key(object)
+ if object:IsA('MeshPart') or object:IsA('SpecialMesh') then
+  local id=object.MeshId
+  if id~='' then return id:match('%d+') or id end
  end
- for _,object in ipairs(character:GetChildren()) do
-  if object:IsA('Model') and (object:FindFirstChild('GunComponents') or object:FindFirstChild('ToolComponents')) then return object.Name end
+end
+task.spawn(function()
+ if not equipment_catalog then return end
+ for i,object in ipairs(RS:GetDescendants()) do
+  if not hub.alive then return end
+  local key=mesh_key(object)
+  if key then
+   local ancestor=object
+   while ancestor and ancestor~=RS do
+    local data=equipment_catalog[ancestor.Name]
+    if data and (data.ArmorSlot or data.ToolInfo or data.Gather or data.BulletType or data.Type=='Gun' or data.Type=='Tool' or data.Type=='Clothes') then
+     local existing=equipment_assets[key]
+     if existing==nil then equipment_assets[key]=ancestor.Name elseif existing~=ancestor.Name then equipment_assets[key]=false end
+     break
+    end
+    ancestor=ancestor.Parent
+   end
+  end
+  if i%300==0 then task.wait() end
  end
- return '—'
+end)
+local equipment_cache=setmetatable({},{__mode='k'})
+local function equipment(character)
+ local cached=equipment_cache[character]
+ if cached and os.clock()-cached.time<.4 then return cached end
+ local result={time=os.clock(),weapon='Unknown',armor='Unknown'}
+ local armor,seen={},{}
+ local weapon_score=0
+ local function consider(name,score)
+  if type(name)~='string' then return end
+  local lower=name:lower()
+  if lower=='hands' or lower=='arms' or lower=='fists' or lower=='none' then return end
+  local data=equipment_catalog and equipment_catalog[name]
+  if not data then return end
+  if data.ArmorSlot or data.Type=='Clothes' then
+   if not seen[name] then seen[name]=true; table.insert(armor,name) end
+  elseif (data.ToolInfo or data.Gather or data.BulletType or data.Type=='Gun' or data.Type=='Tool') and score>weapon_score then
+   weapon_score=score; result.weapon=name
+  end
+ end
+ local function metadata(object)
+  for _,key in ipairs({'ItemName','EquippedItem','EquippedWeapon','CurrentWeapon','ToolName','ArmorName'}) do consider(object:GetAttribute(key),5) end
+ end
+ metadata(character)
+ for _,object in ipairs(character:GetDescendants()) do
+  if object:IsA('Tool') or object:IsA('Model') or object:IsA('Accessory') or object:IsA('Folder') then metadata(object); consider(object.Name,object:IsA('Tool') and 4 or 2) end
+  if object:IsA('StringValue') and (object.Name=='ItemName' or object.Name=='WeaponName' or object.Name=='ArmorName') then consider(object.Value,6) end
+  local key=mesh_key(object)
+  if key and equipment_assets[key] then consider(equipment_assets[key],1) end
+ end
+ if #armor>0 then table.sort(armor); result.armor=table.concat(armor,', ') end
+ equipment_cache[character]=result; return result
 end
 local function player_details(r,player,camera,c,min,max)
  if not min then return end
  local mid=(min.X+max.X)*.5
- r.name.Visible=cfg.esp_names; r.name.Text=type(player)=='table' and ('[BOT] '..c.Name) or (player.DisplayName..' (@'..player.Name..')')
+ r.name.Visible=cfg.esp_names; r.name.Text=type(player)=='table' and ((player.kind=='sleeper' and '[SLEEPER] ' or '[BOT] ')..c.Name) or (player.DisplayName..' (@'..player.Name..')')
  r.name.Position=UDim2.fromOffset(mid,min.Y-3); r.name.TextColor3=r.color
  local details={}
  if cfg.esp_distance then
   local origin=me.Character and me.Character:FindFirstChild('HumanoidRootPart')
   table.insert(details,tostring(math.floor((character_root(c).Position-(origin and origin.Position or camera.CFrame.Position)).Magnitude))..' st')
  end
- if cfg.esp_weapon then table.insert(details,held_weapon(c)) end
+ if cfg.esp_weapon or cfg.esp_armor then
+  local gear=equipment(c)
+  if cfg.esp_weapon then table.insert(details,'Weapon: '..gear.weapon) end
+  if cfg.esp_armor then table.insert(details,'Armor: '..gear.armor) end
+ end
  r.details.Visible=#details>0; r.details.Text=table.concat(details,'\n')
  r.details.Position=UDim2.fromOffset(mid,max.Y+3); r.details.TextColor3=r.color
- local humanoid=c:FindFirstChildOfClass('Humanoid')
- r.health.Visible=cfg.esp_health and humanoid~=nil
- if humanoid then
-  local ratio=math.clamp(humanoid.Health/math.max(1,humanoid.MaxHealth),0,1)
+ local hp,max_hp=character_health(c)
+ r.health.Visible=cfg.esp_health and hp~=nil and max_hp~=nil
+ if hp and max_hp then
+  local ratio=math.clamp(hp/math.max(1,max_hp),0,1)
   r.health.Position=UDim2.fromOffset(min.X-8,min.Y); r.health.Size=UDim2.fromOffset(4,math.max(1,max.Y-min.Y))
   r.health_fill.Size=UDim2.fromScale(1,ratio); r.health_fill.BackgroundColor3=Color3.fromRGB(240,65,65):Lerp(Color3.fromRGB(65,240,110),ratio)
  end
@@ -435,7 +522,7 @@ Run:BindToRenderStep(render_name,Enum.RenderPriority.Camera.Value+2,function(dt)
   if not model:IsDescendantOf(workspace) or Players:GetPlayerFromCharacter(model) then
    local r=records[bot]; if r then r.root:Destroy(); r.highlight:Destroy(); records[bot]=nil end
    bots[model]=nil
-  elseif cfg.bots then table.insert(subjects,bot)
+  elseif (bot.kind=='sleeper' and cfg.sleepers) or (bot.kind=='bot' and cfg.bots) then table.insert(subjects,bot)
   elseif records[bot] then records[bot].root.Visible=false; records[bot].highlight.Enabled=false end
  end
  for _,p in ipairs(subjects) do
@@ -477,6 +564,8 @@ local potato_states={}
 local potato_queue={}
 local potato_index=1
 local potato_on=false
+local potato_parts={}
+local potato_cursor=1
 local function potato_set(object,key,value)
  local ok,old=pcall(function() return object[key] end)
  if not ok or old==value then return end
@@ -490,13 +579,20 @@ local function potato_apply(object)
  local ancestor=object
  while ancestor and ancestor~=workspace and ancestor~=Lighting do
   if ancestor==workspace.CurrentCamera or ancestor.Name=='OcelTracer' then return end
-  if ancestor:IsA('Model') and ancestor:FindFirstChildOfClass('Humanoid') then return end
+   if ancestor:IsA('Model') and (ancestor:FindFirstChildOfClass('Humanoid') or bots[ancestor]) then return end
   ancestor=ancestor.Parent
  end
- if object:IsA('BasePart') then
-  potato_set(object,'Material',Enum.Material.SmoothPlastic); potato_set(object,'Reflectance',0); potato_set(object,'CastShadow',false)
- elseif object:IsA('Decal') or object:IsA('Texture') then potato_set(object,'Transparency',1)
- elseif object:IsA('ParticleEmitter') or object:IsA('Trail') or object:IsA('Beam') or object:IsA('PostEffect') then potato_set(object,'Enabled',false)
+  if object:IsA('BasePart') then
+   potato_set(object,'Material',Enum.Material.SmoothPlastic); potato_set(object,'Reflectance',0); potato_set(object,'CastShadow',false)
+   if not potato_parts[object] then potato_parts[object]=true; table.insert(potato_parts,object) end
+   if object:IsA('MeshPart') then
+    potato_set(object,'TextureID',''); potato_set(object,'RenderFidelity',Enum.RenderFidelity.Performance); potato_set(object,'DoubleSided',false)
+   end
+  elseif object:IsA('Decal') or object:IsA('Texture') then potato_set(object,'Transparency',1)
+  elseif object:IsA('SpecialMesh') then potato_set(object,'TextureId','')
+  elseif object:IsA('SurfaceAppearance') then
+   for _,key in ipairs({'ColorMap','NormalMap','MetalnessMap','RoughnessMap'}) do potato_set(object,key,'') end
+  elseif object:IsA('ParticleEmitter') or object:IsA('Trail') or object:IsA('Beam') or object:IsA('PostEffect') or object:IsA('Light') or object:IsA('Fire') or object:IsA('Smoke') or object:IsA('Sparkles') then potato_set(object,'Enabled',false)
  end
 end
 local function restore_potato()
@@ -505,6 +601,7 @@ local function restore_potato()
   for key,value in pairs(state) do pcall(function() object[key]=value end) end
  end
  table.clear(potato_states)
+ table.clear(potato_parts); potato_cursor=1
 end
 for _,root in ipairs({workspace,Lighting}) do
  connect(root.DescendantAdded,function(object) if potato_on then table.insert(potato_queue,object) end end)
@@ -512,13 +609,31 @@ end
 connect(Run.Heartbeat,function()
  if cfg.potato and not potato_on then
   potato_on=true; potato_queue=workspace:GetDescendants(); potato_index=1
-  for _,object in ipairs(Lighting:GetDescendants()) do table.insert(potato_queue,object) end
+   for _,object in ipairs(Lighting:GetDescendants()) do table.insert(potato_queue,object) end
+   pcall(function() potato_set(UserSettings():GetService('UserGameSettings'),'SavedQualityLevel',Enum.SavedQualitySetting.QualityLevel1) end)
+   potato_set(workspace.Terrain,'WaterWaveSize',0); potato_set(workspace.Terrain,'WaterWaveSpeed',0); potato_set(workspace.Terrain,'WaterReflectance',0); potato_set(workspace.Terrain,'Decoration',false)
  elseif not cfg.potato and potato_on then restore_potato() end
  if potato_on then
   local last=math.min(#potato_queue,potato_index+199)
   for i=potato_index,last do potato_apply(potato_queue[i]) end
   potato_index=last+1
-  if potato_index>#potato_queue then table.clear(potato_queue); potato_index=1 end
+   if potato_index>#potato_queue then table.clear(potato_queue); potato_index=1 end
+   local camera=workspace.CurrentCamera
+   if camera and #potato_parts>0 then
+    for _=1,math.min(150,#potato_parts) do
+     if potato_cursor>#potato_parts then potato_cursor=1 end
+     local part=potato_parts[potato_cursor]; potato_cursor=potato_cursor+1
+     if part.Parent then
+      local name=part.Name:lower()
+      local foliage=name:find('leaf') or name:find('leaves') or name:find('foliage') or name:find('grass') or name:find('bush')
+      local hidden=foliage or (part.Position-camera.CFrame.Position).Magnitude>cfg.potato_distance
+      local saved=potato_states[part]
+      local original=saved and saved.LocalTransparencyModifier
+      if original==nil then original=part.LocalTransparencyModifier end
+      potato_set(part,'LocalTransparencyModifier',hidden and 1 or original)
+     end
+    end
+   end
  end
 end)
 local resources={}
@@ -548,7 +663,7 @@ local function index_resource(object)
  if kind then resources[object]=kind end
 end
 connect(workspace.DescendantAdded,function(object)
- if object:IsA('Humanoid') then resource_pending[object]=true end
+ if object:IsA('Humanoid') or object:IsA('ValueBase') then resource_pending[object]=true end
  if object:IsA('Model') or object:IsA('BasePart') then resource_pending[object]=true end
  local parent=object.Parent
  if parent and parent:IsA('Model') then resource_pending[parent]=true end
