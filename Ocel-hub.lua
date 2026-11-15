@@ -179,6 +179,8 @@ slider(a,'FOV radius / pixels','fov',30,400)
 slider(a,'Camera response','smooth',1,30)
 cycle(a,'Camera aim mode','aim_mode',{'Instant','Smooth'})
 slider(a,'Motion lead / seconds','aim_lead',0,.1)
+local silent_status=label(a,'Silent: adapter pending.',UDim2.new(1,-8,0,85))
+silent_status.TextWrapped=true; silent_status.TextYAlignment=Enum.TextYAlignment.Top
 toggle(a,'Magic Tools / rock + spear','magic_tools')
 toggle(a,'Magic Tools auto attack','tools_auto')
 slider(a,'Tools reach (server limited)','tools_range',5,30)
@@ -934,6 +936,8 @@ end
 -- Scope the ray override to Shoot's coroutine: local simulation and remote share it.
 local active=setmetatable({},{__mode='k'})
 local hooked=0
+local silent_stats={calls=0,rays=0,redirects=0,errors=0}
+local ray_hook_ready=false
 local ballistics
 pcall(function() ballistics=require(RS.GunSystem.Ballistics) end)
 local function predicted(origin,part,config)
@@ -951,44 +955,110 @@ local function predicted(origin,part,config)
  end
  return pos
 end
+local function shot_target(camera)
+ local center=camera.ViewportSize*.5
+ local best=cfg.fov
+ local chosen
+ for _,player in ipairs(Players:GetPlayers()) do
+  if eligible(player,camera) then
+   local part=player.Character:FindFirstChild(cfg.part)
+   if part then
+    local point,on=project(camera,part.Position)
+    local score=(point-center).Magnitude
+    if on and score<best and (not cfg.visible or clear_path(camera,part)) then chosen=part; best=score end
+   end
+  end
+ end
+ return chosen
+end
+local function caller_weapon()
+ if getcallingscript then
+  local ok,script_object=pcall(getcallingscript)
+  if ok and script_object then
+   if script_object.Name=='GunShootModule' or script_object.Name=='BowShootModule' then return script_object.Name end
+  end
+ end
+ if debug and debug.info then
+  for level=3,9 do
+   local ok,source=pcall(debug.info,level,'s')
+   if ok and type(source)=='string' then
+    if source:find('GunShootModule',1,true) then return 'GunShootModule' end
+    if source:find('BowShootModule',1,true) then return 'BowShootModule' end
+   end
+  end
+ end
+end
+local function shot_config(kind,slot,context)
+ local config
+ local ok=pcall(function()
+  if not ballistics then ballistics=require(RS.GunSystem.Ballistics) end
+  if kind=='BowShootModule' then
+   local data=context and context.ItemData
+   if not data then local _,equipped=equipped_item(); data=equipped end
+   config=ballistics.GetBowConfig(data)
+  else
+   if not slot then local _,_,equipped=equipped_item(); slot=equipped end
+   if not slot then return end
+   local name=slot.ItemName.Value; local data=require(RS.ItemData).Items[name]
+   config=ballistics.ApplyAmmo(ballistics.GetConfig(name,data),require(RS.AmmoTypes).Loaded(slot))
+  end
+ end)
+ if not ok then silent_stats.errors=silent_stats.errors+1 end
+ return config
+end
 if hookmetamethod and newcclosure and getnamecallmethod then
  local old
+ local installed,install_error=pcall(function()
  old=hookmetamethod(game,'__namecall',newcclosure(function(self,...)
+  if not hub.alive then return old(self,...) end
   local context=active[coroutine.running()]
-  if hub.alive and context and self==workspace.CurrentCamera and getnamecallmethod()=='ViewportPointToRay' then
+  if self==workspace.CurrentCamera and getnamecallmethod()=='ViewportPointToRay' then
+   if not context then
+    local kind=caller_weapon()
+    if kind then context={config=shot_config(kind)} end
+   end
+   if not context then return old(self,...) end
+   silent_stats.rays=silent_stats.rays+1
    local ray=old(self,...); local direction=ray.Direction
-   if cfg.silent and target and target.Parent then
-    local delta=predicted(ray.Origin,target,context.config)-ray.Origin
-    if delta.Magnitude>.001 then direction=delta.Unit end
+   local chosen=cfg.silent and shot_target(self)
+   if chosen then
+    local delta=predicted(ray.Origin,chosen,context.config)-ray.Origin
+    if delta.Magnitude>.001 then direction=delta.Unit; silent_stats.redirects=silent_stats.redirects+1 end
    end
    task.defer(tracer,ray.Origin,direction)
    return Ray.new(ray.Origin,direction)
   end
   return old(self,...)
  end))
- for _,module in ipairs(game:GetDescendants()) do
+ end)
+ ray_hook_ready=installed
+ if not installed then silent_status.Text='Silent hook failed: '..tostring(install_error) end
+end
+local function install_shoot(module)
+ if not hub.alive or not ray_hook_ready then return end
   if module:IsA('ModuleScript') and (module.Name=='GunShootModule' or module.Name=='BowShootModule') then
    local ok,exports=pcall(require,module)
    if ok and type(exports)=='table' and type(exports.Shoot)=='function' and not hub.hooks[exports] then
-    local original=exports.Shoot; hub.hooks[exports]=original
-    exports.Shoot=function(slot,context,...)
-     local config
-     pcall(function()
-      if module.Name=='BowShootModule' then config=ballistics.GetBowConfig(context.ItemData)
-      else
-       local name=slot.ItemName.Value; local data=require(RS.ItemData).Items[name]
-       config=ballistics.ApplyAmmo(ballistics.GetConfig(name,data),require(RS.AmmoTypes).Loaded(slot))
-      end
-     end)
-     local thread=coroutine.running(); active[thread]={config=config}
-     local result=table.pack(pcall(original,slot,context,...)); active[thread]=nil
+     local original=exports.Shoot; local invoke=original
+     local function wrapped(slot,context,...)
+      if not hub.alive then return invoke(slot,context,...) end
+      silent_stats.calls=silent_stats.calls+1
+      local config=shot_config(module.Name,slot,context)
+      local thread=coroutine.running(); local previous=active[thread]; active[thread]={config=config}
+      local result=table.pack(pcall(invoke,slot,context,...)); active[thread]=previous
      if not result[1] then error(result[2],0) end
-     return table.unpack(result,2,result.n)
+      return table.unpack(result,2,result.n)
+     end
+     local function_hooked=false
+     if hookfunction then
+      local success,trampoline=pcall(hookfunction,original,wrapped)
+      if success and type(trampoline)=='function' then invoke=trampoline; function_hooked=true end
+     end
+     if not function_hooked then exports.Shoot=wrapped end
+     hub.hooks[exports]=original
+     hooked=hooked+1
     end
-    hooked=hooked+1
    end
-  end
- end
 end
 local melee_modules={}
 local melee_count=0
@@ -1029,10 +1099,19 @@ for _,module in ipairs(game:GetDescendants()) do
    exports.Check=extended_check
    if type(exports.Hit)=='function' then melee_attack=exports end
    table.insert(hub.restores,function() if exports.Check==extended_check then exports.Check=original end end)
-   melee_count=melee_count+1
+    melee_count=melee_count+1
+   end
   end
- end
 end
+for _,module in ipairs(game:GetDescendants()) do install_shoot(module) end
+connect(game.DescendantAdded,function(object)
+ if object:IsA('ModuleScript') and (object.Name=='GunShootModule' or object.Name=='BowShootModule') then task.defer(install_shoot,object) end
+end)
+local silent_clock=0
+connect(Run.Heartbeat,function(dt)
+ silent_clock=silent_clock+dt; if silent_clock<.5 then return end; silent_clock=0
+ silent_status.Text='Silent '..(cfg.silent and 'ON' or 'OFF')..' / ray hook '..(ray_hook_ready and 'OK' or 'UNAVAILABLE')..' / modules '..hooked..'\nShoot '..silent_stats.calls..' / rays '..silent_stats.rays..' / redirected '..silent_stats.redirects..' / config errors '..silent_stats.errors..'\nRedirected is a changed client ray, NOT confirmed damage.'
+end)
 local tools_summary='Magic Tools adapters: '..melee_count
 tools_status.Text=tools_summary..'\nEnable Magic Tools + auto attack, equip Rock / Wooden Spear, hide the menu.'
 local tools_clock=0
