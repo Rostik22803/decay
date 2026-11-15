@@ -20,7 +20,8 @@ local cfg = {boxes=true, skeleton=true, enemies=false, arms=false, weapon=false,
  trees=false, ores=false, resource_distance=500, resource_limit=80,
  tree_color=Color3.fromRGB(170,230,170), ore_color=Color3.fromRGB(180,205,255),
  auto_farm=false, farm_mode='Magic', farm_trees=true, farm_ores=true, farm_range=5,
- magic_range=12, aim_mode='Instant', aim_lead=0}
+ magic_range=12, aim_mode='Instant', aim_lead=0, cloth=false,
+ cloth_color=Color3.fromRGB(235,225,175), magic_tools=false, tools_range=12, tools_auto=false}
 local function connect(signal, fn)
  local c = signal:Connect(fn); table.insert(hub.connections,c); return c
 end
@@ -154,7 +155,7 @@ end
 cycle(chams,'Enemy depth','depth',{'AlwaysOnTop','Occluded'})
 slider(chams,'Enemy outline transparency','outline_opacity',0,1)
 local world=pages.World
-toggle(world,'Tree ESP','trees'); toggle(world,'Ore ESP','ores')
+toggle(world,'Tree ESP','trees'); toggle(world,'Ore ESP','ores'); toggle(world,'Cloth ESP','cloth')
 slider(world,'Resource ESP distance','resource_distance',50,2000)
 slider(world,'Max resource labels','resource_limit',10,150)
 toggle(world,'Auto farm nearby','auto_farm')
@@ -171,10 +172,15 @@ slider(a,'FOV radius / pixels','fov',30,400)
 slider(a,'Camera response','smooth',1,30)
 cycle(a,'Camera aim mode','aim_mode',{'Instant','Smooth'})
 slider(a,'Motion lead / seconds','aim_lead',0,.1)
+toggle(a,'Magic Tools / rock + spear','magic_tools')
+toggle(a,'Magic Tools auto attack','tools_auto')
+slider(a,'Tools reach (server limited)','tools_range',5,30)
+local tools_status=label(a,'Magic Tools: adapter pending.',UDim2.new(1,-8,0,65))
+tools_status.TextWrapped=true; tools_status.TextYAlignment=Enum.TextYAlignment.Top
 local status=label(pages.System,'',UDim2.new(1,-8,0,100)); status.TextWrapped=true; status.TextYAlignment=Enum.TextYAlignment.Top
 label(pages.System,'Insert: show / hide. Touch: OCEL button.\nUnload restores lighting and local materials.',UDim2.new(1,-8,0,62)).TextWrapped=true
 local palettes={Color3.new(1,1,1),Color3.new(.45,.45,.45),Color3.fromRGB(255,70,90),Color3.fromRGB(255,170,60),Color3.fromRGB(255,230,80),Color3.fromRGB(70,230,150),Color3.fromRGB(70,180,255),Color3.fromRGB(180,100,255)}
-for _,entry in ipairs({{'ESP','esp_color'},{'Enemy chams','enemy_color'},{'Hands','arms_color'},{'Weapon','weapon_color'},{'Tracers','tracer_color'},{'Trees','tree_color'},{'Ores','ore_color'}}) do
+for _,entry in ipairs({{'ESP','esp_color'},{'Enemy chams','enemy_color'},{'Hands','arms_color'},{'Weapon','weapon_color'},{'Tracers','tracer_color'},{'Trees','tree_color'},{'Ores','ore_color'},{'Cloth','cloth_color'}}) do
  local r=row(pages.Colors,entry[1],112); r:FindFirstChildOfClass('TextLabel').Size=UDim2.new(1,-20,0,26)
  for j,col in ipairs(palettes) do
   local b=button(r,'',UDim2.fromOffset(30,26),UDim2.fromOffset(12+(j-1)*38,30)); b.BackgroundColor3=col
@@ -397,8 +403,19 @@ local resources={}
 local resource_labels={}
 local resource_pending={}
 local function resource_kind(model)
- if not model:IsA('Model') or model:FindFirstChildOfClass('Humanoid') then return end
+ if not (model:IsA('Model') or model:IsA('BasePart')) or model:FindFirstChildOfClass('Humanoid') then return end
  local name=model.Name:lower()
+ if name=='cloth' or name=='hemp' or name=='cloth plant' or name=='clothplant' then
+  local ancestor=model.Parent
+  while ancestor and ancestor~=workspace do
+   local ancestor_name=ancestor.Name:lower()
+   if ancestor:FindFirstChildOfClass('Humanoid') or ancestor==workspace.CurrentCamera then return end
+   if ancestor_name=='cloth' or ancestor_name=='hemp' or ancestor_name=='cloth plant' or ancestor_name=='clothplant' then return end
+   ancestor=ancestor.Parent
+  end
+  return 'cloth'
+ end
+ if not model:IsA('Model') then return end
  if name=='tree' then return 'tree' end
  if model:FindFirstChild('System') and (name:find('stone') or name:find('metal') or name:find('sulfur') or name:find('ore')) then return 'ore' end
 end
@@ -408,7 +425,7 @@ local function index_resource(object)
  if kind then resources[object]=kind end
 end
 connect(workspace.DescendantAdded,function(object)
- if object:IsA('Model') then resource_pending[object]=true end
+ if object:IsA('Model') or object:IsA('BasePart') then resource_pending[object]=true end
  local parent=object.Parent
  if parent and parent:IsA('Model') then resource_pending[parent]=true end
 end)
@@ -422,11 +439,12 @@ end)
 task.spawn(function()
  for i,object in ipairs(workspace:GetDescendants()) do
   if not hub.alive then return end
-  if object:IsA('Model') then index_resource(object) end
+  if object:IsA('Model') or object:IsA('BasePart') then index_resource(object) end
   if i%400==0 then task.wait() end
  end
 end)
 local function resource_position(model)
+ if model:IsA('BasePart') then return model.Position end
  local part=model.PrimaryPart or model:FindFirstChildWhichIsA('BasePart',true)
  return part and part.Position
 end
@@ -434,9 +452,9 @@ local function update_resources()
  for object in pairs(resource_pending) do index_resource(object); resource_pending[object]=nil end
  local camera=workspace.CurrentCamera; if not camera then return end
  local visible={}
- if cfg.trees or cfg.ores then
+ if cfg.trees or cfg.ores or cfg.cloth then
   for model,kind in pairs(resources) do
-   if (kind=='tree' and cfg.trees) or (kind=='ore' and cfg.ores) then
+   if (kind=='tree' and cfg.trees) or (kind=='ore' and cfg.ores) or (kind=='cloth' and cfg.cloth) then
     local pos=resource_position(model)
     if pos then
      local distance=(pos-camera.CFrame.Position).Magnitude
@@ -457,15 +475,15 @@ local function update_resources()
    resource_labels[model]=text
   end
   text.Position=UDim2.fromOffset(item.point.X,item.point.Y)
-  text.Text=(item.kind=='tree' and 'TREE' or model.Name:upper())..'  ['..math.floor(item.distance)..' st]'
-  text.TextColor3=item.kind=='tree' and cfg.tree_color or cfg.ore_color
+  text.Text=(item.kind=='tree' and 'TREE' or item.kind=='cloth' and 'CLOTH' or model.Name:upper())..'  ['..math.floor(item.distance)..' st]'
+  text.TextColor3=cfg[item.kind..'_color']
  end
  for model,text in pairs(resource_labels) do if not wanted[model] then text:Destroy(); resource_labels[model]=nil end end
 end
 local item_data
 pcall(function() item_data=require(RS.ItemData).Items end)
 local selected_slot
-local function equipped_tool()
+local function equipped_item()
  if not selected_slot or not selected_slot.Parent then
   local player_gui=me:FindFirstChild('PlayerGui')
   local hotbar=player_gui and player_gui:FindFirstChild('Hotbar',true)
@@ -474,7 +492,11 @@ local function equipped_tool()
  local slot=selected_slot and selected_slot:IsA('ObjectValue') and selected_slot.Value
  local item=slot and slot:FindFirstChild('ItemName')
  local data=item and item_data and item_data[item.Value]
- if data and data.Gather and data.ToolInfo then return item.Value,data,slot end
+ if data and data.ToolInfo then return item.Value,data,slot end
+end
+local function equipped_tool()
+ local name,data,slot=equipped_item()
+ if data and data.Gather then return name,data,slot end
 end
 local function resource_ancestor(part)
  local object=part
@@ -644,12 +666,91 @@ if hookmetamethod and newcclosure and getnamecallmethod then
   end
  end
 end
+local melee_modules={}
+local melee_count=0
+local melee_attack
+for _,module in ipairs(game:GetDescendants()) do
+ if module:IsA('ModuleScript') and module.Name=='MeleeClient' then
+  local ok,exports=pcall(require,module)
+  if ok and type(exports)=='table' and type(exports.Check)=='function' and not melee_modules[exports] then
+   melee_modules[exports]=true
+   local original=exports.Check
+   local function extended_check(tool_name,...)
+    local ray,hit=original(tool_name,...)
+    if not hub.alive or not cfg.magic_tools or panel.Visible or (tool_name~='Rock' and tool_name~='Wooden Spear') then return ray,hit end
+    local character=me.Character
+    local head=character and character:FindFirstChild('Head')
+    local humanoid=character and character:FindFirstChildOfClass('Humanoid')
+    local camera=workspace.CurrentCamera
+    if not camera or not head or not humanoid or humanoid.Health<=0 then return ray,hit end
+    local center=camera.ViewportSize*.5
+    local best=cfg.fov
+    local chosen
+    for _,player in ipairs(Players:GetPlayers()) do
+     if eligible(player,camera) then
+      local part=player.Character:FindFirstChild(cfg.part)
+      if part and (part.Position-head.Position).Magnitude<=cfg.tools_range then
+       local point,on=project(camera,part.Position)
+       local score=(point-center).Magnitude
+       if on and score<best and clear_path(camera,part) then best=score; chosen=part end
+      end
+     end
+    end
+    if not chosen then return ray,hit end
+    local delta=chosen.Position-head.Position
+    if delta.Magnitude<.001 then return ray,hit end
+    -- Preserve the stock Hit -> Swing path and its tool name; do not move the character.
+    return Ray.new(ray.Origin,delta.Unit),{Part=chosen,Position=chosen.Position}
+   end
+   exports.Check=extended_check
+   if type(exports.Hit)=='function' then melee_attack=exports end
+   table.insert(hub.restores,function() if exports.Check==extended_check then exports.Check=original end end)
+   melee_count=melee_count+1
+  end
+ end
+end
+local tools_summary='Magic Tools adapters: '..melee_count
+tools_status.Text=tools_summary..'\nEnable Magic Tools + auto attack, equip Rock / Wooden Spear, hide the menu.'
+local tools_clock=0
+connect(Run.Heartbeat,function(dt)
+ tools_clock=tools_clock+dt
+ if tools_clock<.1 then return end
+ tools_clock=0
+ if not cfg.tools_auto then return end
+ if not cfg.magic_tools then tools_status.Text=tools_summary..'\nAuto attack paused: enable Magic Tools.'; return end
+ if panel.Visible then tools_status.Text=tools_summary..'\nAuto attack paused: menu open.'; return end
+ if not melee_attack then tools_status.Text='Auto attack unavailable: MeleeClient.Hit missing.'; return end
+ if os.clock()<next_farm or farm_busy then return end
+ local name,data=equipped_item()
+ if name~='Rock' and name~='Wooden Spear' then tools_status.Text=tools_summary..'\nSelect Rock or Wooden Spear in the hotbar.'; return end
+ local character=me.Character; local humanoid=character and character:FindFirstChildOfClass('Humanoid')
+ if not humanoid or humanoid.Health<=0 then return end
+ local camera=workspace.CurrentCamera; if not camera then return end
+ local system=RS:FindFirstChild('ToolSystem'); local remotes=system and system:FindFirstChild('RemoteEvents')
+ local swing=remotes and remotes:FindFirstChild('Swing')
+ if not swing or not swing:IsA('RemoteEvent') then tools_status.Text='Auto attack: Swing unavailable.'; return end
+ local ok,err=pcall(function()
+  local _,hit=melee_attack.Check(name)
+  local part=hit and hit.Part
+  local model=part and part:FindFirstAncestorOfClass('Model')
+  local player=model and Players:GetPlayerFromCharacter(model)
+  if not player or not eligible(player,camera) then tools_status.Text=tools_summary..'\nWaiting for an enemy in range / FOV.'; return end
+  local point,on=project(camera,part.Position)
+  if not on or (point-camera.ViewportSize*.5).Magnitude>cfg.fov or not clear_path(camera,part) then return end
+  local info=data.ToolInfo
+  next_farm=os.clock()+math.max(.35,info.HitInterval or ((info.PlayTime or .5)+(info.WaitTime or .25)))
+  melee_attack.Hit(swing,name)
+  tools_status.Text=tools_summary..'\nAuto → '..player.Name..' / '..name..' (damage not verified)'
+ end)
+ if not ok then next_farm=os.clock()+2; tools_status.Text='Auto attack: '..tostring(err) end
+end)
 status.Text='OCEL / client adapter\nWeapon modules connected: '..hooked..'\n'..(hooked>0 and 'Silent ray adapter installed. Server hit validation still applies.' or 'Silent / tracers unavailable: executor hook APIs or module access missing.')
 function hub:Destroy()
  if not self.alive then return end; self.alive=false
  Run:UnbindFromRenderStep(render_name)
  for _,c in ipairs(self.connections) do c:Disconnect() end
  for exports,original in pairs(self.hooks) do exports.Shoot=original end
+ for _,restore in ipairs(self.restores) do restore() end
  for part,state in pairs(modified) do restore_part(part,state) end
  for part,state in pairs(enemy_modified) do restore_part(part,state) end
  stop_farm_animation()
