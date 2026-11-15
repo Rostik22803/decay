@@ -51,7 +51,7 @@ local header=label(panel,'  OCEL / HUB',UDim2.new(1,-90,0,55))
 header.TextSize=20
 local close=button(panel,'−',UDim2.fromOffset(36,32),UDim2.new(1,-80,0,12))
 local exit=button(panel,'×',UDim2.fromOffset(32,32),UDim2.new(1,-40,0,12))
-local reopen=button(gui,'  OCEL / HUB  ·  OPEN',UDim2.fromOffset(218,42),UDim2.fromOffset(12,12))
+local reopen=button(gui,'  OCEL / HUB  ·  OPEN',UDim2.fromOffset(218,42),UDim2.new(0,12,1,-54))
 reopen.Name='Watermark'; reopen.TextXAlignment=Enum.TextXAlignment.Left
 reopen.BackgroundColor3=Color3.fromRGB(15,15,18)
 make('UIStroke',{Color=Color3.fromRGB(95,95,100),Thickness=1},reopen)
@@ -59,7 +59,33 @@ local function set_menu(visible)
  panel.Visible=visible; reopen.Text='  OCEL / HUB  ·  '..(visible and 'OPEN' or 'HIDDEN')
 end
 connect(close.Activated,function() set_menu(false) end)
-connect(reopen.Activated,function() set_menu(not panel.Visible) end)
+local watermark_input, watermark_start, watermark_position, watermark_moved
+connect(reopen.InputBegan,function(i)
+ if watermark_input then return end
+ if i.UserInputType==Enum.UserInputType.Touch or i.UserInputType==Enum.UserInputType.MouseButton1 then
+  watermark_input=i; watermark_start=Vector2.new(i.Position.X,i.Position.Y)
+  watermark_position=reopen.AbsolutePosition; watermark_moved=false
+ end
+end)
+connect(Input.InputChanged,function(i)
+ if not watermark_input or not (i==watermark_input or (watermark_input.UserInputType==Enum.UserInputType.MouseButton1 and i.UserInputType==Enum.UserInputType.MouseMovement)) then return end
+ local delta=Vector2.new(i.Position.X,i.Position.Y)-watermark_start
+ if delta.Magnitude>6 then watermark_moved=true end
+ if watermark_moved then
+  local camera=workspace.CurrentCamera; if not camera then return end
+  local pos=watermark_position+delta; local limit=camera.ViewportSize-reopen.AbsoluteSize
+  reopen.Position=UDim2.fromOffset(math.clamp(pos.X,0,math.max(0,limit.X)),math.clamp(pos.Y,0,math.max(0,limit.Y)))
+ end
+end)
+connect(Input.InputEnded,function(i)
+ if i~=watermark_input then return end
+ local point=Vector2.new(i.Position.X,i.Position.Y)
+ local pos,size=reopen.AbsolutePosition,reopen.AbsoluteSize
+ if not watermark_moved and (point-watermark_start).Magnitude<=6 and point.X>=pos.X and point.X<=pos.X+size.X and point.Y>=pos.Y and point.Y<=pos.Y+size.Y then
+  set_menu(not panel.Visible)
+ end
+ watermark_input=nil
+end)
 local dragging, drag_start, panel_start
 connect(header.InputBegan,function(i)
  if i.UserInputType==Enum.UserInputType.Touch or i.UserInputType==Enum.UserInputType.MouseButton1 then dragging=i; drag_start=i.Position; panel_start=panel.Position end
