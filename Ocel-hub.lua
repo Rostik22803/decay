@@ -24,7 +24,8 @@ local cfg = {boxes=true, skeleton=true, enemies=false, arms=false, weapon=false,
  cloth_color=Color3.fromRGB(235,225,175), magic_tools=false, tools_range=12, tools_auto=false,
  esp_names=true, esp_distance=true, esp_health=true, esp_weapon=true, esp_visibility=true,
  potato=false, bots=true, sleepers=true, esp_armor=true, potato_distance=300,
- esp_icons=true, icon_size=32}
+ esp_icons=true, icon_size=32, weapon_icons=true, armor_icons=true, esp_health_text=false,
+ skins_enabled=false}
 local function connect(signal, fn)
  local c = signal:Connect(fn); table.insert(hub.connections,c); return c
 end
@@ -102,7 +103,7 @@ end)
 connect(Input.InputEnded,function(i) if i==dragging then dragging=nil end end)
 local tabs=make('Frame',{BackgroundTransparency=1,Size=UDim2.new(1,-24,0,36),Position=UDim2.fromOffset(12,57)},panel)
 local pages={}
-local tab_names={'Visuals','Chams','Aim','World','Colors','System'}
+local tab_names={'Visuals','Chams','Aim','World','Skins','Colors','System'}
 for n,name in ipairs(tab_names) do
  local page=make('ScrollingFrame',{Size=UDim2.new(1,-24,1,-111),Position=UDim2.fromOffset(12,101),BackgroundTransparency=1,BorderSizePixel=0,ScrollBarThickness=3,AutomaticCanvasSize=Enum.AutomaticSize.Y,CanvasSize=UDim2.new(),Visible=n==1},panel)
  make('UIListLayout',{Padding=UDim.new(0,7),SortOrder=Enum.SortOrder.LayoutOrder},page)
@@ -148,9 +149,11 @@ cycle(v,'Box style','box_style',{'Corners','Rectangle'})
 slider(v,'Line thickness','width',1,4)
 slider(v,'Draw distance','distance',100,3000)
 slider(v,'Tracer lifetime','lifetime',.1,3)
-for _,entry in ipairs({{'Player names','esp_names'},{'Player distance','esp_distance'},{'Health bar','esp_health'},{'Held weapon','esp_weapon'},{'Equipped armor','esp_armor'},{'Sleeper ESP','sleepers'},{'Bot ESP / scientists','bots'},{'Visible green / hidden red','esp_visibility'},{'Potato graphics','potato'}}) do toggle(v,entry[1],entry[2]) end
+for _,entry in ipairs({{'Player names','esp_names'},{'Player distance','esp_distance'},{'Health bar','esp_health'},{'Weapon text','esp_weapon'},{'Armor text','esp_armor'},{'Sleeper ESP','sleepers'},{'Bot ESP / scientists','bots'},{'Visible green / hidden red','esp_visibility'},{'Potato graphics','potato'}}) do toggle(v,entry[1],entry[2]) end
 slider(v,'Potato world draw distance','potato_distance',100,1000)
-toggle(v,'Equipment pictures','esp_icons')
+toggle(v,'Weapon pictures','weapon_icons')
+toggle(v,'Armor pictures','armor_icons')
+toggle(v,'Numeric health','esp_health_text')
 slider(v,'Equipment picture size','icon_size',22,46)
 local materials={'Neon','ForceField','SmoothPlastic','Glass','Metal','Foil'}
 local chams=pages.Chams
@@ -450,8 +453,8 @@ local function equipment(character)
 end
 local function equipment_pictures(r,gear,mid,y)
  local items={}
- if cfg.esp_weapon and gear.weapon~='Unknown' then table.insert(items,gear.weapon) end
- if cfg.esp_armor then for _,name in ipairs(gear.armor_items) do table.insert(items,name) end end
+ if cfg.weapon_icons and gear.weapon~='Unknown' then table.insert(items,{name=gear.weapon,caption=cfg.esp_weapon}) end
+ if cfg.armor_icons then for _,name in ipairs(gear.armor_items) do table.insert(items,{name=name,caption=cfg.esp_armor}) end end
  local count=math.min(8,#items)
  r.icon_root.Visible=cfg.esp_icons and count>0
  if not r.icon_root.Visible then return end
@@ -466,13 +469,13 @@ local function equipment_pictures(r,gear,mid,y)
    local caption=label(frame,'',UDim2.new()); caption.TextSize=9; caption.TextXAlignment=Enum.TextXAlignment.Center; caption.TextTruncate=Enum.TextTruncate.AtEnd
    card={frame=frame,image=image,caption=caption}; r.icons[i]=card
   end
-  local name=items[i]; local data=equipment_catalog[name]
+  local name=items[i].name; local data=equipment_catalog[name]
   local image=data and (data.Image or data.Icon or data.ImageId)
   if type(image)=='number' then image='rbxassetid://'..image end
   if type(image)=='string' and image:match('^%d+$') then image='rbxassetid://'..image end
   card.frame.Visible=true; card.frame.Position=UDim2.fromOffset((i-1)*(size+4),0); card.frame.Size=UDim2.fromOffset(size,size+18)
   card.image.Size=UDim2.fromOffset(size,size); card.image.Image=type(image)=='string' and image or ''
-  card.caption.Position=UDim2.fromOffset(1,size); card.caption.Size=UDim2.fromOffset(size-2,16); card.caption.Text=name
+  card.caption.Position=UDim2.fromOffset(1,size); card.caption.Size=UDim2.fromOffset(size-2,16); card.caption.Text=name; card.caption.Visible=items[i].caption
  end
  for i=count+1,#r.icons do r.icons[i].frame.Visible=false end
 end
@@ -486,7 +489,11 @@ local function player_details(r,player,camera,c,min,max)
   local origin=me.Character and me.Character:FindFirstChild('HumanoidRootPart')
   table.insert(details,tostring(math.floor((character_root(c).Position-(origin and origin.Position or camera.CFrame.Position)).Magnitude))..' st')
  end
- if cfg.esp_weapon or cfg.esp_armor then
+ if cfg.esp_health_text then
+  local hp,max_hp=character_health(c)
+  if hp then table.insert(details,'HP: '..math.ceil(hp)..(max_hp and (' / '..math.ceil(max_hp)) or '')) end
+ end
+ if cfg.esp_weapon or cfg.esp_armor or cfg.weapon_icons or cfg.armor_icons then
   local gear=equipment(c)
   if cfg.esp_weapon then table.insert(details,'Weapon: '..gear.weapon) end
   if cfg.esp_armor then table.insert(details,'Armor: '..gear.armor) end
@@ -802,7 +809,7 @@ end
 local item_data
 pcall(function() item_data=require(RS.ItemData).Items end)
 local selected_slot
-local function equipped_item()
+local function selected_item()
  if not selected_slot or not selected_slot.Parent or not selected_slot.Value then
   local player_gui=me:FindFirstChild('PlayerGui')
   selected_slot=nil
@@ -816,12 +823,136 @@ local function equipped_item()
  local slot=selected_slot and selected_slot:IsA('ObjectValue') and selected_slot.Value
  local item=slot and slot:FindFirstChild('ItemName')
  local data=item and item_data and item_data[item.Value]
- if data and data.ToolInfo then return item.Value,data,slot end
+ if data then return item.Value,data,slot end
+end
+local function equipped_item()
+ local name,data,slot=selected_item()
+ if data and data.ToolInfo then return name,data,slot end
 end
 local function equipped_tool()
  local name,data,slot=equipped_item()
  if data and data.Gather then return name,data,slot end
 end
+local skin_ui={selected={},saved={},clones={},detached={},catalog=nil,current=nil,applied=nil}
+toggle(pages.Skins,'Local skin changer','skins_enabled')
+skin_ui.title=label(pages.Skins,'Equip a weapon to browse its skins.',UDim2.new(1,-8,0,34))
+skin_ui.title.TextWrapped=true
+skin_ui.status=label(pages.Skins,'Local visuals only. No inventory changes.',UDim2.new(1,-8,0,58))
+skin_ui.status.TextWrapped=true; skin_ui.status.TextYAlignment=Enum.TextYAlignment.Top
+skin_ui.gallery=make('Frame',{BackgroundTransparency=1,Size=UDim2.new(1,-2,0,0)},pages.Skins)
+local function skin_restore()
+ for _,object in ipairs(skin_ui.clones) do object:Destroy() end
+ for object,parent in pairs(skin_ui.detached) do pcall(function() object.Parent=parent end) end
+ for object,properties in pairs(skin_ui.saved) do
+  for key,value in pairs(properties) do pcall(function() object[key]=value end) end
+ end
+ table.clear(skin_ui.clones); table.clear(skin_ui.detached); table.clear(skin_ui.saved)
+ skin_ui.applied=nil
+end
+local function skin_property(object,key,value)
+ local ok,old=pcall(function() return object[key] end)
+ if not ok or old==value then return end
+ if not skin_ui.saved[object] then skin_ui.saved[object]={} end
+ if skin_ui.saved[object][key]==nil then skin_ui.saved[object][key]=old end
+ pcall(function() object[key]=value end)
+end
+local function skin_source(name,skin)
+ local system=RS:FindFirstChild('GunSystem')
+ local models=system and system:FindFirstChild('Models')
+ local source=models and models:FindFirstChild(name..'-'..skin)
+ if source then return source end
+ local tools=RS:FindFirstChild('ToolSystem'); local viewmodels=tools and tools:FindFirstChild('Viewmodels')
+ local weapon=viewmodels and viewmodels:FindFirstChild(name)
+ return weapon and weapon:FindFirstChild(name..'-'..skin)
+end
+local function skin_live(name)
+ local camera=workspace.CurrentCamera
+ if not camera then return end
+ for _,object in ipairs(camera:GetDescendants()) do
+  if object:IsA('Model') and object.Name==name and (object:FindFirstChild('GunComponents') or object:FindFirstChild('ToolComponents')) then return object end
+ end
+end
+local function skin_relative(object,root)
+ local names={}
+ while object and object~=root do table.insert(names,1,object.Name); object=object.Parent end
+ return table.concat(names,'/')
+end
+local function skin_apply(live,source)
+ local lookup={}
+ for _,object in ipairs(source:GetDescendants()) do lookup[skin_relative(object,source)]=object end
+ local changed=0
+ for _,object in ipairs(live:GetDescendants()) do
+  local original=lookup[skin_relative(object,live)]
+  if original and original.ClassName==object.ClassName then
+   if object:IsA('BasePart') then
+    if not cfg.weapon then
+     skin_property(object,'Color',original.Color); skin_property(object,'Material',original.Material); skin_property(object,'Reflectance',original.Reflectance)
+    end
+    if object:IsA('MeshPart') then skin_property(object,'TextureID',original.TextureID) end
+    local surface=original:FindFirstChildOfClass('SurfaceAppearance')
+    if surface then
+     for _,existing in ipairs(object:GetChildren()) do
+      if existing:IsA('SurfaceAppearance') then skin_ui.detached[existing]=object; existing.Parent=nil end
+     end
+     local copy=surface:Clone(); copy.Parent=object; table.insert(skin_ui.clones,copy)
+    end
+    changed=changed+1
+   elseif object:IsA('SpecialMesh') then skin_property(object,'TextureId',original.TextureId); skin_property(object,'VertexColor',original.VertexColor)
+   elseif object:IsA('Decal') or object:IsA('Texture') then skin_property(object,'Texture',original.Texture); skin_property(object,'Color3',original.Color3) end
+  end
+ end
+ return changed
+end
+local function skin_gallery(name,data)
+ for _,child in ipairs(skin_ui.gallery:GetChildren()) do child:Destroy() end
+ if not name then skin_ui.gallery.Size=UDim2.new(1,-2,0,0); return end
+ local entries={{name='Original',key='',image=data.Image}}
+ local skins=skin_ui.catalog and skin_ui.catalog[name]
+ if type(skins)=='table' then
+  local names={}; for skin in pairs(skins) do table.insert(names,skin) end; table.sort(names)
+  for _,skin in ipairs(names) do table.insert(entries,{name=skin,key=skin,image=skins[skin]}) end
+ end
+ skin_ui.gallery.Size=UDim2.new(1,-2,0,math.ceil(#entries/3)*122)
+ make('UIGridLayout',{CellSize=UDim2.new(1/3,-6,0,116),CellPadding=UDim2.fromOffset(6,6),SortOrder=Enum.SortOrder.LayoutOrder},skin_ui.gallery)
+ for index,entry in ipairs(entries) do
+  local card=button(skin_ui.gallery,'',UDim2.new()); card.LayoutOrder=index
+  local image=entry.image
+  if type(image)=='number' then image='rbxassetid://'..image end
+  if type(image)=='string' and image:match('^%d+$') then image='rbxassetid://'..image end
+  make('ImageLabel',{BackgroundTransparency=1,Size=UDim2.new(1,-8,0,82),Position=UDim2.fromOffset(4,3),ScaleType=Enum.ScaleType.Fit,Image=type(image)=='string' and image or ''},card)
+  local text=label(card,entry.name,UDim2.new(1,-8,0,28),UDim2.fromOffset(4,85)); text.TextWrapped=true; text.TextSize=11; text.TextXAlignment=Enum.TextXAlignment.Center
+  card.Activated:Connect(function()
+   skin_ui.selected[name]=entry.key~='' and entry.key or nil
+   skin_restore()
+   skin_ui.status.Text='Selected: '..entry.name..(cfg.skins_enabled and '' or '\nEnable Local skin changer to apply.')
+  end)
+ end
+end
+local skin_clock=0
+connect(Run.Heartbeat,function(dt)
+ skin_clock=skin_clock+dt; if skin_clock<.35 then return end; skin_clock=0
+ if not skin_ui.catalog then pcall(function() skin_ui.catalog=require(RS.ItemData).Skins end) end
+ local name,data=selected_item()
+ if data and not (data.BulletType or data.ToolInfo or data.Type=='Gun' or data.Type=='Tool') then name=nil; data=nil end
+ if skin_ui.current~=name then
+  skin_restore(); skin_ui.current=name
+  skin_ui.title.Text=name and ('In hands: '..name) or 'Equip a weapon to browse its skins.'
+  skin_gallery(name,data)
+ end
+ local selected=name and skin_ui.selected[name]
+ if not cfg.skins_enabled or not selected then if skin_ui.applied then skin_restore() end; return end
+ local live=skin_live(name)
+ if not live then skin_ui.status.Text='Waiting for equipped viewmodel: '..name; return end
+ if skin_ui.applied==live then return end
+ skin_restore()
+ local source=skin_source(name,selected)
+ if not source then skin_ui.status.Text='Preview available, but skin model is not replicated: '..selected; return end
+ local ok,count=pcall(skin_apply,live,source)
+ if ok then
+  skin_ui.applied=live
+  skin_ui.status.Text=selected..' / matched parts: '..count..'\nLocal surfaces only; model geometry is unchanged.'
+ else skin_restore(); skin_ui.status.Text='Skin error: '..tostring(count) end
+end)
 local function resource_ancestor(part)
  local object=part
  while object and object~=workspace do
@@ -994,10 +1125,10 @@ local function shot_config(kind,slot,context)
   if not ballistics then ballistics=require(RS.GunSystem.Ballistics) end
   if kind=='BowShootModule' then
    local data=context and context.ItemData
-   if not data then local _,equipped=equipped_item(); data=equipped end
+   if not data then local _,equipped=selected_item(); data=equipped end
    config=ballistics.GetBowConfig(data)
   else
-   if not slot then local _,_,equipped=equipped_item(); slot=equipped end
+   if not slot then local _,_,equipped=selected_item(); slot=equipped end
    if not slot then return end
    local name=slot.ItemName.Value; local data=require(RS.ItemData).Items[name]
    config=ballistics.ApplyAmmo(ballistics.GetConfig(name,data),require(RS.AmmoTypes).Loaded(slot))
@@ -1165,6 +1296,7 @@ function hub:Destroy()
  for part,state in pairs(enemy_modified) do restore_part(part,state) end
  stop_farm_animation()
  restore_potato()
+ skin_restore()
  restore_bright()
  for object in pairs(self.objects) do object:Destroy() end
  gui:Destroy()
