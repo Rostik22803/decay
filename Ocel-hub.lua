@@ -19,7 +19,8 @@ local cfg = {boxes=true, skeleton=true, enemies=false, arms=false, weapon=false,
  enemy_opacity=.45, arms_opacity=.15, weapon_opacity=.15, outline_opacity=.1,
  trees=false, ores=false, resource_distance=500, resource_limit=80,
  tree_color=Color3.fromRGB(170,230,170), ore_color=Color3.fromRGB(180,205,255),
- auto_farm=false, farm_mode='Magic', farm_trees=true, farm_ores=true, farm_range=5}
+ auto_farm=false, farm_mode='Magic', farm_trees=true, farm_ores=true, farm_range=5,
+ magic_range=12, aim_mode='Instant', aim_lead=0}
 local function connect(signal, fn)
  local c = signal:Connect(fn); table.insert(hub.connections,c); return c
 end
@@ -134,6 +135,7 @@ toggle(world,'Auto farm nearby','auto_farm')
 cycle(world,'Farm mode','farm_mode',{'Magic','Animated'})
 toggle(world,'Farm trees','farm_trees'); toggle(world,'Farm ores','farm_ores')
 slider(world,'Farm reach','farm_range',2,5)
+slider(world,'Magic reach (server limited)','magic_range',2,30)
 local farm_status=label(world,'Equip a gathering tool. No auto movement.',UDim2.new(1,-8,0,72))
 farm_status.TextWrapped=true; farm_status.TextYAlignment=Enum.TextYAlignment.Top
 local a=pages.Aim
@@ -141,6 +143,8 @@ for _,x in ipairs({{'Camera aim (toggle)','aim'},{'Silent aim / guns + bow','sil
 cycle(a,'Target part','part',{'Head','HumanoidRootPart'})
 slider(a,'FOV radius / pixels','fov',30,400)
 slider(a,'Camera response','smooth',1,30)
+cycle(a,'Camera aim mode','aim_mode',{'Instant','Smooth'})
+slider(a,'Motion lead / seconds','aim_lead',0,.1)
 local status=label(pages.System,'',UDim2.new(1,-8,0,100)); status.TextWrapped=true; status.TextYAlignment=Enum.TextYAlignment.Top
 label(pages.System,'Insert: show / hide. Touch: OCEL button.\nUnload restores lighting and local materials.',UDim2.new(1,-8,0,62)).TextWrapped=true
 local palettes={Color3.new(1,1,1),Color3.new(.45,.45,.45),Color3.fromRGB(255,70,90),Color3.fromRGB(255,170,60),Color3.fromRGB(255,230,80),Color3.fromRGB(70,230,150),Color3.fromRGB(70,180,255),Color3.fromRGB(180,100,255)}
@@ -243,8 +247,42 @@ local function boxes(r,camera,c)
   end
  end
 end
-local saved_light={}
-for _,key in ipairs({'Brightness','ClockTime','Ambient','OutdoorAmbient','GlobalShadows','FogEnd'}) do saved_light[key]=Lighting[key] end
+-- Do not fight the game's day/night controller by rewriting ClockTime.
+local light_values={Brightness=2,Ambient=Color3.fromRGB(210,210,210),OutdoorAmbient=Color3.fromRGB(210,210,210),GlobalShadows=false,FogStart=1e6,FogEnd=1e7,ExposureCompensation=0}
+local bright_states={}
+local light_on=false
+local function force_bright(object,values)
+ if bright_states[object] then return end
+ local state={values={},connections={}}
+ bright_states[object]=state
+ for key,value in pairs(values) do
+  state.values[key]=object[key]
+  table.insert(state.connections,object:GetPropertyChangedSignal(key):Connect(function()
+   if hub.alive and light_on and cfg.bright and object[key]~=value then object[key]=value end
+  end))
+  if object[key]~=value then object[key]=value end
+ end
+end
+local function atmosphere_bright(object)
+ if object:IsA('Atmosphere') then force_bright(object,{Density=0,Haze=0,Glare=0}) end
+end
+local function restore_bright()
+ light_on=false
+ for object,state in pairs(bright_states) do
+  for _,c in ipairs(state.connections) do c:Disconnect() end
+  pcall(function() for key,value in pairs(state.values) do object[key]=value end end)
+ end
+ table.clear(bright_states)
+end
+local function update_bright()
+ if cfg.bright and not light_on then
+  light_on=true; force_bright(Lighting,light_values)
+  for _,object in ipairs(Lighting:GetChildren()) do atmosphere_bright(object) end
+ elseif not cfg.bright and light_on then restore_bright() end
+end
+connect(Lighting.ChildAdded,function(object)
+ if light_on and cfg.bright then atmosphere_bright(object) end
+end)
 local modified={}
 local enemy_modified={}
 local function restore_part(part,state)
@@ -293,9 +331,9 @@ local function view_chams(camera)
  end
  restore_unused(modified,wanted)
 end
-local light_on=false
 local tick_acc=0
-connect(Run.RenderStepped,function(dt)
+local render_name='OcelHubCamera_'..tostring(math.floor(os.clock()*1e6))
+Run:BindToRenderStep(render_name,Enum.RenderPriority.Camera.Value+2,function(dt)
  local camera=workspace.CurrentCamera; if not camera then return end
  fit(); local center=camera.ViewportSize*.5
  fov_circle.Visible=cfg.aim or cfg.silent; fov_circle.Position=UDim2.fromOffset(center.X-cfg.fov,center.Y-cfg.fov); fov_circle.Size=UDim2.fromOffset(cfg.fov*2,cfg.fov*2)
@@ -315,14 +353,16 @@ connect(Run.RenderStepped,function(dt)
    for i=r.used+1,#r.lines do r.lines[i].Visible=false end
   end
  end
- if cfg.aim and target and not panel.Visible then camera.CFrame=camera.CFrame:Lerp(CFrame.lookAt(camera.CFrame.Position,target.Position),1-math.exp(-cfg.smooth*dt)) end
+  if cfg.aim and target and not panel.Visible then
+   local point=target.Position+target.AssemblyLinearVelocity*cfg.aim_lead
+   local desired=CFrame.lookAt(camera.CFrame.Position,point)
+   if cfg.aim_mode=='Instant' then camera.CFrame=desired
+   else camera.CFrame=camera.CFrame:Lerp(desired,1-math.exp(-cfg.smooth*dt)) end
+  end
+ update_bright()
  tick_acc=tick_acc+dt
  if tick_acc>.15 then
    tick_acc=0; view_chams(camera); enemy_chams(camera)
-  if cfg.bright then
-   Lighting.Brightness=2; Lighting.ClockTime=14; Lighting.Ambient=Color3.new(1,1,1); Lighting.OutdoorAmbient=Color3.new(1,1,1); Lighting.GlobalShadows=false; Lighting.FogEnd=1e6
-  elseif light_on then for k,value in pairs(saved_light) do Lighting[k]=value end end
-  light_on=cfg.bright
  end
 end)
 connect(Players.PlayerRemoving,function(p) local r=records[p]; if r then r.root:Destroy(); r.highlight:Destroy(); records[p]=nil end end)
@@ -422,20 +462,21 @@ local function closest_point(part,origin)
  return part.CFrame:PointToWorldSpace(Vector3.new(math.clamp(p.X,-half.X,half.X),math.clamp(p.Y,-half.Y,half.Y),math.clamp(p.Z,-half.Z,half.Z)))
 end
 local function farm_target(head,data)
+ local reach=cfg.farm_mode=='Magic' and cfg.magic_range or cfg.farm_range
  local camera=workspace.CurrentCamera
  local exclusions={me.Character}; if camera then table.insert(exclusions,camera) end
  local overlap=OverlapParams.new(); overlap.FilterType=Enum.RaycastFilterType.Exclude; overlap.FilterDescendantsInstances=exclusions
  local ray_params=RaycastParams.new(); ray_params.FilterType=Enum.RaycastFilterType.Exclude; ray_params.FilterDescendantsInstances=exclusions; ray_params.IgnoreWater=true
  local best,best_distance
- for _,part in ipairs(workspace:GetPartBoundsInRadius(head.Position,cfg.farm_range,overlap)) do
+ for _,part in ipairs(workspace:GetPartBoundsInRadius(head.Position,reach,overlap)) do
   local model,kind=resource_ancestor(part)
   local allowed=model and ((kind=='tree' and cfg.farm_trees and data.Gather.Wood) or (kind=='ore' and cfg.farm_ores and data.Gather.Stone))
   if allowed and part.CanQuery then
    local point=closest_point(part,head.Position)
    local offset=point-head.Position
    if offset.Magnitude<.01 then offset=part.Position-head.Position end
-   if offset.Magnitude>.01 and offset.Magnitude<=cfg.farm_range then
-    local hit=workspace:Raycast(head.Position,offset.Unit*cfg.farm_range,ray_params)
+   if offset.Magnitude>.01 and offset.Magnitude<=reach then
+    local hit=workspace:Raycast(head.Position,offset.Unit*reach,ray_params)
     if hit and hit.Instance:IsDescendantOf(model) then
      local distance=(hit.Position-head.Position).Magnitude
      if not best_distance or distance<best_distance then best={model=model,direction=offset.Unit}; best_distance=distance end
@@ -580,12 +621,13 @@ end
 status.Text='OCEL / client adapter\nWeapon modules connected: '..hooked..'\n'..(hooked>0 and 'Silent ray adapter installed. Server hit validation still applies.' or 'Silent / tracers unavailable: executor hook APIs or module access missing.')
 function hub:Destroy()
  if not self.alive then return end; self.alive=false
+ Run:UnbindFromRenderStep(render_name)
  for _,c in ipairs(self.connections) do c:Disconnect() end
  for exports,original in pairs(self.hooks) do exports.Shoot=original end
  for part,state in pairs(modified) do restore_part(part,state) end
  for part,state in pairs(enemy_modified) do restore_part(part,state) end
  stop_farm_animation()
- if light_on then for k,value in pairs(saved_light) do Lighting[k]=value end end
+ restore_bright()
  for object in pairs(self.objects) do object:Destroy() end
  gui:Destroy()
  if env.OcelHub==self then env.OcelHub=nil end
