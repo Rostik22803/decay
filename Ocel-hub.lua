@@ -122,6 +122,7 @@ local function toggle(page,text,key)
  local r=row(page,text); local b=button(r,'',UDim2.fromOffset(58,30),UDim2.new(1,-68,.5,-15))
  local function update() b.Text=cfg[key] and 'ON' or 'OFF'; b.BackgroundColor3=cfg[key] and Color3.fromRGB(220,220,225) or Color3.fromRGB(40,40,44); b.TextColor3=cfg[key] and Color3.new(0,0,0) or Color3.new(1,1,1) end
  connect(b.Activated,function() cfg[key]=not cfg[key]; update() end); update()
+ return update
 end
 local function cycle(page,text,key,values)
  local r=row(page,text); local b=button(r,cfg[key],UDim2.fromOffset(134,30),UDim2.new(1,-144,.5,-15))
@@ -591,7 +592,8 @@ local function view_chams(camera)
     local name=part.Name:lower()
     local arm=name:find('arm') or name:find('hand')
     local enabled=arm and cfg.arms or not arm and cfg.weapon
-     if enabled then apply_material(part,arm and 'arms' or 'weapon',modified,wanted) end
+      local skin_owned=(hub.skin_model and part:IsDescendantOf(hub.skin_model)) or (hub.skin_overlay and part:IsDescendantOf(hub.skin_overlay))
+      if enabled and not skin_owned then apply_material(part,arm and 'arms' or 'weapon',modified,wanted) end
    end
   end
  end
@@ -833,28 +835,19 @@ local function equipped_tool()
  local name,data,slot=equipped_item()
  if data and data.Gather then return name,data,slot end
 end
-local skin_ui={selected={},saved={},clones={},detached={},catalog=nil,current=nil,applied=nil}
-toggle(pages.Skins,'Local skin changer','skins_enabled')
+local skin_ui={selected={},hidden={},links={},catalog=nil,current=nil,applied=nil,next_retry=0}
+skin_ui.sync_toggle=toggle(pages.Skins,'Local skin changer','skins_enabled')
 skin_ui.title=label(pages.Skins,'Equip a weapon to browse its skins.',UDim2.new(1,-8,0,34))
 skin_ui.title.TextWrapped=true
 skin_ui.status=label(pages.Skins,'Local visuals only. No inventory changes.',UDim2.new(1,-8,0,58))
 skin_ui.status.TextWrapped=true; skin_ui.status.TextYAlignment=Enum.TextYAlignment.Top
 skin_ui.gallery=make('Frame',{BackgroundTransparency=1,Size=UDim2.new(1,-2,0,0)},pages.Skins)
 local function skin_restore()
- for _,object in ipairs(skin_ui.clones) do object:Destroy() end
- for object,parent in pairs(skin_ui.detached) do pcall(function() object.Parent=parent end) end
- for object,properties in pairs(skin_ui.saved) do
-  for key,value in pairs(properties) do pcall(function() object[key]=value end) end
- end
- table.clear(skin_ui.clones); table.clear(skin_ui.detached); table.clear(skin_ui.saved)
+ if hub.skin_overlay then hub.skin_overlay:Destroy() end
+ for part,value in pairs(skin_ui.hidden) do pcall(function() part.LocalTransparencyModifier=value end) end
+ hub.skin_overlay=nil; hub.skin_model=nil
+ table.clear(skin_ui.hidden); table.clear(skin_ui.links)
  skin_ui.applied=nil
-end
-local function skin_property(object,key,value)
- local ok,old=pcall(function() return object[key] end)
- if not ok or old==value then return end
- if not skin_ui.saved[object] then skin_ui.saved[object]={} end
- if skin_ui.saved[object][key]==nil then skin_ui.saved[object][key]=old end
- pcall(function() object[key]=value end)
 end
 local function skin_source(name,skin)
  local system=RS:FindFirstChild('GunSystem')
@@ -869,7 +862,8 @@ local function skin_live(name)
  local camera=workspace.CurrentCamera
  if not camera then return end
  for _,object in ipairs(camera:GetDescendants()) do
-  if object:IsA('Model') and object.Name==name and (object:FindFirstChild('GunComponents') or object:FindFirstChild('ToolComponents')) then return object end
+   local cosmetic=hub.skin_overlay and (object==hub.skin_overlay or object:IsDescendantOf(hub.skin_overlay))
+   if not cosmetic and object:IsA('Model') and object.Name==name and (object:FindFirstChild('GunComponents') or object:FindFirstChild('ToolComponents')) then return object end
  end
 end
 local function skin_relative(object,root)
@@ -878,30 +872,46 @@ local function skin_relative(object,root)
  return table.concat(names,'/')
 end
 local function skin_apply(live,source)
- local lookup={}
- for _,object in ipairs(source:GetDescendants()) do lookup[skin_relative(object,source)]=object end
- local changed=0
- for _,object in ipairs(live:GetDescendants()) do
-  local original=lookup[skin_relative(object,live)]
-  if original and original.ClassName==object.ClassName then
-   if object:IsA('BasePart') then
-    if not cfg.weapon then
-     skin_property(object,'Color',original.Color); skin_property(object,'Material',original.Material); skin_property(object,'Reflectance',original.Reflectance)
-    end
-    if object:IsA('MeshPart') then skin_property(object,'TextureID',original.TextureID) end
-    local surface=original:FindFirstChildOfClass('SurfaceAppearance')
-    if surface then
-     for _,existing in ipairs(object:GetChildren()) do
-      if existing:IsA('SurfaceAppearance') then skin_ui.detached[existing]=object; existing.Parent=nil end
-     end
-     local copy=surface:Clone(); copy.Parent=object; table.insert(skin_ui.clones,copy)
-    end
-    changed=changed+1
-   elseif object:IsA('SpecialMesh') then skin_property(object,'TextureId',original.TextureId); skin_property(object,'VertexColor',original.VertexColor)
-   elseif object:IsA('Decal') or object:IsA('Texture') then skin_property(object,'Texture',original.Texture); skin_property(object,'Color3',original.Color3) end
+ local paths,names={},{}
+ for _,part in ipairs(live:GetDescendants()) do
+  if part:IsA('BasePart') then
+   paths[skin_relative(part,live)]=part
+   if names[part.Name]==nil then names[part.Name]=part else names[part.Name]=false end
   end
  end
- return changed
+ local function grip(model)
+  local components=model:FindFirstChild('GunComponents') or model:FindFirstChild('ToolComponents')
+  return components and (components:FindFirstChild('Handle') or components:FindFirstChild('Barrel')) or model.PrimaryPart or model:FindFirstChildWhichIsA('BasePart',true)
+ end
+ local live_grip,source_grip=grip(live),grip(source)
+ if not live_grip or not source_grip then error('Weapon grip missing; original model kept visible') end
+ local cosmetic=source:Clone()
+ if not cosmetic then error('Skin model cannot be cloned') end
+ cosmetic.Name='OcelSkinVisual'
+ hub.skin_overlay=cosmetic
+ local links={}
+ local visible_count=0
+ for _,object in ipairs(cosmetic:GetDescendants()) do
+  if object:IsA('BasePart') then
+   local target=paths[skin_relative(object,cosmetic)] or names[object.Name]
+   local anchor=target or live_grip
+   local offset=target and CFrame.identity or source_grip.CFrame:ToObjectSpace(object.CFrame)
+   object.Anchored=true; object.CanCollide=false; object.CanTouch=false; object.CanQuery=false; object.CastShadow=false
+   object.LocalTransparencyModifier=0
+   if object.Transparency<1 then visible_count=visible_count+1 end
+   table.insert(links,{visual=object,anchor=anchor,offset=offset})
+  elseif object:IsA('LuaSourceContainer') or object:IsA('JointInstance') or object:IsA('Constraint') or object:IsA('Humanoid') or object:IsA('AnimationController') or object:IsA('Animator') or object:IsA('ParticleEmitter') or object:IsA('Beam') or object:IsA('Trail') or object:IsA('Sound') then
+   object:Destroy()
+  end
+ end
+ if visible_count==0 then error('Skin has no visible geometry; original model kept visible') end
+ for _,link in ipairs(links) do link.visual.CFrame=link.anchor.CFrame*link.offset end
+ cosmetic.Parent=workspace.CurrentCamera
+ skin_ui.links=links; hub.skin_model=live
+ for _,part in ipairs(live:GetDescendants()) do
+  if part:IsA('BasePart') then skin_ui.hidden[part]=part.LocalTransparencyModifier; part.LocalTransparencyModifier=1 end
+ end
+ return #links
 end
 local function skin_gallery(name,data)
  for _,child in ipairs(skin_ui.gallery:GetChildren()) do child:Destroy() end
@@ -922,9 +932,14 @@ local function skin_gallery(name,data)
   make('ImageLabel',{BackgroundTransparency=1,Size=UDim2.new(1,-8,0,82),Position=UDim2.fromOffset(4,3),ScaleType=Enum.ScaleType.Fit,Image=type(image)=='string' and image or ''},card)
   local text=label(card,entry.name,UDim2.new(1,-8,0,28),UDim2.fromOffset(4,85)); text.TextWrapped=true; text.TextSize=11; text.TextXAlignment=Enum.TextXAlignment.Center
   card.Activated:Connect(function()
+   if entry.key~='' and not skin_source(name,entry.key) then
+    skin_ui.status.Text='Preview only: this skin model is not loaded. Current appearance unchanged.'; return
+   end
    skin_ui.selected[name]=entry.key~='' and entry.key or nil
+   skin_ui.next_retry=0
    skin_restore()
-   skin_ui.status.Text='Selected: '..entry.name..(cfg.skins_enabled and '' or '\nEnable Local skin changer to apply.')
+   if entry.key~='' then cfg.skins_enabled=true; skin_ui.sync_toggle() end
+   skin_ui.status.Text='Selected: '..entry.name..'\nSkin takes priority over weapon chams.'
   end)
  end
 end
@@ -936,6 +951,7 @@ connect(Run.Heartbeat,function(dt)
  if data and not (data.BulletType or data.ToolInfo or data.Type=='Gun' or data.Type=='Tool') then name=nil; data=nil end
  if skin_ui.current~=name then
   skin_restore(); skin_ui.current=name
+  skin_ui.next_retry=0
   skin_ui.title.Text=name and ('In hands: '..name) or 'Equip a weapon to browse its skins.'
   skin_gallery(name,data)
  end
@@ -943,15 +959,34 @@ connect(Run.Heartbeat,function(dt)
  if not cfg.skins_enabled or not selected then if skin_ui.applied then skin_restore() end; return end
  local live=skin_live(name)
  if not live then skin_ui.status.Text='Waiting for equipped viewmodel: '..name; return end
- if skin_ui.applied==live then return end
+ if skin_ui.applied==live and hub.skin_overlay and hub.skin_overlay.Parent==workspace.CurrentCamera then return end
+ if os.clock()<skin_ui.next_retry then return end
  skin_restore()
  local source=skin_source(name,selected)
  if not source then skin_ui.status.Text='Preview available, but skin model is not replicated: '..selected; return end
  local ok,count=pcall(skin_apply,live,source)
  if ok then
   skin_ui.applied=live
-  skin_ui.status.Text=selected..' / matched parts: '..count..'\nLocal surfaces only; model geometry is unchanged.'
- else skin_restore(); skin_ui.status.Text='Skin error: '..tostring(count) end
+   skin_ui.status.Text=selected..' / cosmetic parts: '..count..'\nFull skin model; weapon chams excluded.'
+ else skin_restore(); skin_ui.next_retry=os.clock()+2; skin_ui.status.Text='Skin error: '..tostring(count) end
+end)
+skin_ui.render_name='OcelSkinVisual_'..tostring(math.floor(os.clock()*1e6))
+Run:BindToRenderStep(skin_ui.render_name,Enum.RenderPriority.Last.Value,function()
+ if not skin_ui.applied then return end
+ local camera=workspace.CurrentCamera
+ if not cfg.skins_enabled or not camera or not skin_ui.applied:IsDescendantOf(camera) then skin_restore(); return end
+ for _,part in ipairs(skin_ui.applied:GetDescendants()) do
+  if part:IsA('BasePart') then
+   if skin_ui.hidden[part]==nil then skin_ui.hidden[part]=part.LocalTransparencyModifier end
+   part.LocalTransparencyModifier=1
+  end
+ end
+ for _,link in ipairs(skin_ui.links) do
+  if link.visual.Parent then
+   if link.anchor.Parent then link.visual.LocalTransparencyModifier=0; link.visual.CFrame=link.anchor.CFrame*link.offset
+   else link.visual.LocalTransparencyModifier=1 end
+  end
+ end
 end)
 local function resource_ancestor(part)
  local object=part
@@ -1289,6 +1324,7 @@ status.Text='OCEL / client adapter\nWeapon modules connected: '..hooked..'\n'..(
 function hub:Destroy()
  if not self.alive then return end; self.alive=false
  Run:UnbindFromRenderStep(render_name)
+ Run:UnbindFromRenderStep(skin_ui.render_name)
  for _,c in ipairs(self.connections) do c:Disconnect() end
  for exports,original in pairs(self.hooks) do exports.Shoot=original end
  for _,restore in ipairs(self.restores) do restore() end
