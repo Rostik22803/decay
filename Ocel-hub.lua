@@ -21,7 +21,9 @@ local cfg = {boxes=true, skeleton=true, enemies=false, arms=false, weapon=false,
  tree_color=Color3.fromRGB(170,230,170), ore_color=Color3.fromRGB(180,205,255),
  auto_farm=false, farm_mode='Magic', farm_trees=true, farm_ores=true, farm_range=5,
  magic_range=12, aim_mode='Instant', aim_lead=0, cloth=false,
- cloth_color=Color3.fromRGB(235,225,175), magic_tools=false, tools_range=12, tools_auto=false}
+ cloth_color=Color3.fromRGB(235,225,175), magic_tools=false, tools_range=12, tools_auto=false,
+ esp_names=true, esp_distance=true, esp_health=true, esp_weapon=true, esp_visibility=true,
+ potato=false}
 local function connect(signal, fn)
  local c = signal:Connect(fn); table.insert(hub.connections,c); return c
 end
@@ -145,6 +147,7 @@ cycle(v,'Box style','box_style',{'Corners','Rectangle'})
 slider(v,'Line thickness','width',1,4)
 slider(v,'Draw distance','distance',100,3000)
 slider(v,'Tracer lifetime','lifetime',.1,3)
+for _,entry in ipairs({{'Player names','esp_names'},{'Player distance','esp_distance'},{'Health bar','esp_health'},{'Held weapon','esp_weapon'},{'Visible green / hidden red','esp_visibility'},{'Potato graphics','potato'}}) do toggle(v,entry[1],entry[2]) end
 local materials={'Neon','ForceField','SmoothPlastic','Glass','Metal','Foil'}
 local chams=pages.Chams
 for _,entry in ipairs({{'Enemies','enemies','enemy'},{'Hands','arms','arms'},{'Weapon','weapon','weapon'}}) do
@@ -202,6 +205,11 @@ local function record(player)
  local r={lines={},used=0,root=make('Frame',{Size=UDim2.fromScale(1,1),BackgroundTransparency=1},overlay)}
  r.head=circle(r.root)
  r.highlight=make('Highlight',{Enabled=false,Name='OcelEnemy'},gui)
+ r.name=label(r.root,'',UDim2.fromOffset(240,18)); r.name.AnchorPoint=Vector2.new(.5,1)
+ r.details=label(r.root,'',UDim2.fromOffset(240,32)); r.details.AnchorPoint=Vector2.new(.5,0)
+ for _,text in ipairs({r.name,r.details}) do text.TextXAlignment=Enum.TextXAlignment.Center; text.TextStrokeTransparency=.1; text.TextSize=12; text.Visible=false end
+ r.health=make('Frame',{BackgroundColor3=Color3.fromRGB(15,15,15),BorderSizePixel=0,Visible=false},r.root)
+ r.health_fill=make('Frame',{AnchorPoint=Vector2.new(0,1),Position=UDim2.fromScale(0,1),BorderSizePixel=0},r.health)
  records[player]=r; return r
 end
 local function line(r,p,q,color)
@@ -216,7 +224,7 @@ local function project(camera,p)
 end
 local function segment(r,camera,p,q)
  local a,ok=project(camera,p); local b,ok2=project(camera,q)
- if ok and ok2 then line(r,a,b,cfg.esp_color) end
+ if ok and ok2 then line(r,a,b,r.color or cfg.esp_color) end
 end
 local function eligible(p,camera)
  local c=p.Character; local h=c and c:FindFirstChildOfClass('Humanoid'); local root=c and c:FindFirstChild('HumanoidRootPart')
@@ -261,22 +269,61 @@ local function skeleton(r,camera,c)
  local edge=project(camera,head.Position+camera.CFrame.RightVector*head.Size.X*.55)
  local radius=math.max(2,(edge-p).Magnitude)
  r.head.Visible=on; r.head.Position=UDim2.fromOffset(p.X-radius,p.Y-radius); r.head.Size=UDim2.fromOffset(radius*2,radius*2)
- local stroke=r.head:FindFirstChildOfClass('UIStroke'); stroke.Color=cfg.esp_color; stroke.Thickness=cfg.width
+ local stroke=r.head:FindFirstChildOfClass('UIStroke'); stroke.Color=r.color or cfg.esp_color; stroke.Thickness=cfg.width
 end
-local function boxes(r,camera,c)
+local function screen_bounds(camera,c)
  local cf,size=c:GetBoundingBox(); local min,max=Vector2.new(math.huge,math.huge),Vector2.new(-math.huge,-math.huge)
  for x=-1,1,2 do for y=-1,1,2 do for z=-1,1,2 do
   local p,on=project(camera,cf:PointToWorldSpace(size*Vector3.new(x,y,z)*.5)); if not on then return end
   min=Vector2.new(math.min(min.X,p.X),math.min(min.Y,p.Y)); max=Vector2.new(math.max(max.X,p.X),math.max(max.Y,p.Y))
  end end end
+ return min,max
+end
+local function boxes(r,camera,c,min,max)
+ if not min then min,max=screen_bounds(camera,c) end
+ if not min then return end
+ local color=r.color or cfg.esp_color
  local tl,tr,bl,br=min,Vector2.new(max.X,min.Y),Vector2.new(min.X,max.Y),max
  if cfg.box_style=='Rectangle' then
-  line(r,tl,tr,cfg.esp_color); line(r,tr,br,cfg.esp_color); line(r,br,bl,cfg.esp_color); line(r,bl,tl,cfg.esp_color)
+  line(r,tl,tr,color); line(r,tr,br,color); line(r,br,bl,color); line(r,bl,tl,color)
  else
   local w,h=(max.X-min.X)*.23,(max.Y-min.Y)*.18
   for _,corner in ipairs({{tl,1,1},{tr,-1,1},{bl,1,-1},{br,-1,-1}}) do
-   line(r,corner[1],corner[1]+Vector2.new(w*corner[2],0),cfg.esp_color); line(r,corner[1],corner[1]+Vector2.new(0,h*corner[3]),cfg.esp_color)
+   line(r,corner[1],corner[1]+Vector2.new(w*corner[2],0),color); line(r,corner[1],corner[1]+Vector2.new(0,h*corner[3]),color)
   end
+ end
+end
+local function held_weapon(character)
+ local tool=character:FindFirstChildOfClass('Tool')
+ if tool then return tool.Name end
+ for _,key in ipairs({'EquippedItem','EquippedWeapon','CurrentWeapon','ToolName'}) do
+  local value=character:GetAttribute(key)
+  if type(value)=='string' and value~='' then return value end
+ end
+ for _,object in ipairs(character:GetChildren()) do
+  if object:IsA('Model') and (object:FindFirstChild('GunComponents') or object:FindFirstChild('ToolComponents')) then return object.Name end
+ end
+ return '—'
+end
+local function player_details(r,player,camera,c,min,max)
+ if not min then return end
+ local mid=(min.X+max.X)*.5
+ r.name.Visible=cfg.esp_names; r.name.Text=player.DisplayName..' (@'..player.Name..')'
+ r.name.Position=UDim2.fromOffset(mid,min.Y-3); r.name.TextColor3=r.color
+ local details={}
+ if cfg.esp_distance then
+  local origin=me.Character and me.Character:FindFirstChild('HumanoidRootPart')
+  table.insert(details,tostring(math.floor((c.HumanoidRootPart.Position-(origin and origin.Position or camera.CFrame.Position)).Magnitude))..' st')
+ end
+ if cfg.esp_weapon then table.insert(details,held_weapon(c)) end
+ r.details.Visible=#details>0; r.details.Text=table.concat(details,'\n')
+ r.details.Position=UDim2.fromOffset(mid,max.Y+3); r.details.TextColor3=r.color
+ local humanoid=c:FindFirstChildOfClass('Humanoid')
+ r.health.Visible=cfg.esp_health and humanoid~=nil
+ if humanoid then
+  local ratio=math.clamp(humanoid.Health/math.max(1,humanoid.MaxHealth),0,1)
+  r.health.Position=UDim2.fromOffset(min.X-8,min.Y); r.health.Size=UDim2.fromOffset(4,math.max(1,max.Y-min.Y))
+  r.health_fill.Size=UDim2.fromScale(1,ratio); r.health_fill.BackgroundColor3=Color3.fromRGB(240,65,65):Lerp(Color3.fromRGB(65,240,110),ratio)
  end
 end
 -- Do not fight the game's day/night controller by rewriting ClockTime.
@@ -373,11 +420,17 @@ Run:BindToRenderStep(render_name,Enum.RenderPriority.Camera.Value+2,function(dt)
  for _,p in ipairs(Players:GetPlayers()) do
   if p~=me then
    local r=records[p] or record(p); r.used=0; r.head.Visible=false; r.highlight.Enabled=false
+   r.name.Visible=false; r.details.Visible=false; r.health.Visible=false
    if eligible(p,camera) then
-    local c=p.Character; local part=c:FindFirstChild(cfg.part)
+     local c=p.Character; local part=c:FindFirstChild(cfg.part)
+     local seen=clear_path(camera,c:FindFirstChild('Head') or c.HumanoidRootPart)
+     r.color=cfg.esp_visibility and (seen and Color3.fromRGB(65,235,105) or Color3.fromRGB(245,65,65)) or cfg.esp_color
     r.highlight.Adornee=c; r.highlight.Enabled=cfg.enemies; r.highlight.FillColor=cfg.enemy_color; r.highlight.OutlineColor=cfg.enemy_color; r.highlight.FillTransparency=cfg.enemy_opacity; r.highlight.OutlineTransparency=cfg.outline_opacity; r.highlight.DepthMode=Enum.HighlightDepthMode[cfg.depth]
-    if cfg.boxes then boxes(r,camera,c) end
-    if cfg.skeleton then skeleton(r,camera,c) end
+     if cfg.esp_visibility then r.highlight.FillColor=r.color; r.highlight.OutlineColor=r.color end
+     local min,max=screen_bounds(camera,c)
+     if cfg.boxes and min then boxes(r,camera,c,min,max) end
+     if cfg.skeleton then skeleton(r,camera,c) end
+     player_details(r,p,camera,c,min,max)
     if part then local point,on=project(camera,part.Position); local dist=(point-center).Magnitude
      if on and dist<best and (not cfg.visible or clear_path(camera,part)) then best=dist; target=part end
     end
@@ -399,6 +452,54 @@ Run:BindToRenderStep(render_name,Enum.RenderPriority.Camera.Value+2,function(dt)
 end)
 connect(Players.PlayerRemoving,function(p) local r=records[p]; if r then r.root:Destroy(); r.highlight:Destroy(); records[p]=nil end end)
 connect(Input.InputBegan,function(i,processed) if not processed and i.KeyCode==Enum.KeyCode.Insert then set_menu(not panel.Visible) end end)
+local potato_states={}
+local potato_queue={}
+local potato_index=1
+local potato_on=false
+local function potato_set(object,key,value)
+ local ok,old=pcall(function() return object[key] end)
+ if not ok or old==value then return end
+ local state=potato_states[object]
+ if not state then state={}; potato_states[object]=state end
+ if state[key]==nil then state[key]=old end
+ pcall(function() object[key]=value end)
+end
+local function potato_apply(object)
+ if not object.Parent then return end
+ local ancestor=object
+ while ancestor and ancestor~=workspace and ancestor~=Lighting do
+  if ancestor==workspace.CurrentCamera or ancestor.Name=='OcelTracer' then return end
+  if ancestor:IsA('Model') and ancestor:FindFirstChildOfClass('Humanoid') then return end
+  ancestor=ancestor.Parent
+ end
+ if object:IsA('BasePart') then
+  potato_set(object,'Material',Enum.Material.SmoothPlastic); potato_set(object,'Reflectance',0); potato_set(object,'CastShadow',false)
+ elseif object:IsA('Decal') or object:IsA('Texture') then potato_set(object,'Transparency',1)
+ elseif object:IsA('ParticleEmitter') or object:IsA('Trail') or object:IsA('Beam') or object:IsA('PostEffect') then potato_set(object,'Enabled',false)
+ end
+end
+local function restore_potato()
+ potato_on=false; table.clear(potato_queue); potato_index=1
+ for object,state in pairs(potato_states) do
+  for key,value in pairs(state) do pcall(function() object[key]=value end) end
+ end
+ table.clear(potato_states)
+end
+for _,root in ipairs({workspace,Lighting}) do
+ connect(root.DescendantAdded,function(object) if potato_on then table.insert(potato_queue,object) end end)
+end
+connect(Run.Heartbeat,function()
+ if cfg.potato and not potato_on then
+  potato_on=true; potato_queue=workspace:GetDescendants(); potato_index=1
+  for _,object in ipairs(Lighting:GetDescendants()) do table.insert(potato_queue,object) end
+ elseif not cfg.potato and potato_on then restore_potato() end
+ if potato_on then
+  local last=math.min(#potato_queue,potato_index+199)
+  for i=potato_index,last do potato_apply(potato_queue[i]) end
+  potato_index=last+1
+  if potato_index>#potato_queue then table.clear(potato_queue); potato_index=1 end
+ end
+end)
 local resources={}
 local resource_labels={}
 local resource_pending={}
@@ -703,7 +804,20 @@ for _,module in ipairs(game:GetDescendants()) do
     return Ray.new(ray.Origin,delta.Unit),{Part=chosen,Position=chosen.Position}
    end
    exports.Check=extended_check
-   if type(exports.Hit)=='function' then melee_attack=exports end
+   if type(exports.Hit)=='function' then
+    local original_hit=exports.Hit
+    local function quiet_magic_hit(remote,tool_name,...)
+     if hub.alive and cfg.magic_tools and (tool_name=='Rock' or tool_name=='Wooden Spear') then
+      local ray,hit=exports.Check(tool_name)
+      remote:FireServer(ray.Direction.Unit,tool_name,hit)
+      return ray,hit
+     end
+     return original_hit(remote,tool_name,...)
+    end
+    exports.Hit=quiet_magic_hit
+    table.insert(hub.restores,function() if exports.Hit==quiet_magic_hit then exports.Hit=original_hit end end)
+    melee_attack=exports
+   end
    table.insert(hub.restores,function() if exports.Check==extended_check then exports.Check=original end end)
    melee_count=melee_count+1
   end
@@ -739,7 +853,12 @@ connect(Run.Heartbeat,function(dt)
   if not on or (point-camera.ViewportSize*.5).Magnitude>cfg.fov or not clear_path(camera,part) then return end
   local info=data.ToolInfo
   next_farm=os.clock()+math.max(.35,info.HitInterval or ((info.PlayTime or .5)+(info.WaitTime or .25)))
-  melee_attack.Hit(swing,name)
+  local head=character:FindFirstChild('Head')
+  if not head then return end
+  local direction=part.Position-head.Position
+  if direction.Magnitude<.001 or direction.Magnitude>cfg.tools_range then return end
+  -- Hitmarker.Show is client-only; sending the request is not proof of damage.
+  swing:FireServer(direction.Unit,name,hit)
   tools_status.Text=tools_summary..'\nAuto → '..player.Name..' / '..name..' (damage not verified)'
  end)
  if not ok then next_farm=os.clock()+2; tools_status.Text='Auto attack: '..tostring(err) end
@@ -754,6 +873,7 @@ function hub:Destroy()
  for part,state in pairs(modified) do restore_part(part,state) end
  for part,state in pairs(enemy_modified) do restore_part(part,state) end
  stop_farm_animation()
+ restore_potato()
  restore_bright()
  for object in pairs(self.objects) do object:Destroy() end
  gui:Destroy()
