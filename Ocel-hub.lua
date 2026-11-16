@@ -28,7 +28,8 @@ local cfg = {boxes=true, skeleton=true, enemies=false, arms=false, weapon=false,
   freecam=false, freecam_speed=40, third_person=false, third_distance=12,
   trigger=false, trigger_delay=.15, trigger_range=500,
   anti_aim=false, head_pitch=75, noclip=false,
-  speedhack=false, move_speed=24, long_jump=false, jump_forward=45, jump_up=40}
+  speedhack=false, move_speed=24, long_jump=false, jump_forward=45, jump_up=40,
+  jump_no_cooldown=false, back_lean=false, back_angle=35, noclip_mode='Walls'}
 local function connect(signal, fn)
  local c = signal:Connect(fn); table.insert(hub.connections,c); return c
 end
@@ -187,6 +188,10 @@ slider(world,'Freecam speed','freecam_speed',5,150)
 toggle(world,'Third person','third_person')
 slider(world,'Third person distance','third_distance',5,40)
 toggle(world,'Noclip','noclip')
+cycle(world,'Noclip mode','noclip_mode',{'Walls','Full'})
+toggle(world,'Jump without local cooldown','jump_no_cooldown')
+toggle(world,'Back lean / local pose','back_lean')
+slider(world,'Back lean angle','back_angle',-75,75)
 toggle(world,'Speedhack','speedhack')
 slider(world,'Movement speed','move_speed',16,80)
 toggle(world,'Long jump / mobile jump button','long_jump')
@@ -1198,6 +1203,18 @@ do
  local third_base,third_applied,third_camera
  local body_visibility=setmetatable({},{__mode='k'})
  local jump_time=0
+ local back_state
+ local wall_constraints={}
+ local function restore_back()
+  if back_state and back_state.joint.Parent then back_state.joint.C0=back_state.c0 end
+  back_state=nil
+ end
+ local function clear_walls()
+  for wall,pairs_by_part in pairs(wall_constraints) do
+   for _,constraint in pairs(pairs_by_part) do constraint:Destroy() end
+   wall_constraints[wall]=nil
+  end
+ end
  local free_button=button(gui,'FREECAM: OFF',UDim2.fromOffset(154,44),UDim2.new(1,-170,0,70))
  connect(free_button.Activated,function()
   cfg.freecam=not cfg.freecam
@@ -1229,7 +1246,8 @@ do
   else restore_speed() end
  end)
  connect(Input.JumpRequest,function()
-  if not cfg.long_jump or cfg.freecam or panel.Visible or Input:GetFocusedTextBox() or os.clock()-jump_time<.4 then return end
+  if not (cfg.long_jump or cfg.jump_no_cooldown) or cfg.freecam or panel.Visible or Input:GetFocusedTextBox() then return end
+  if not cfg.jump_no_cooldown and os.clock()-jump_time<.4 then return end
   local character=me.Character
   local humanoid=character and character:FindFirstChildOfClass('Humanoid')
   local root=character and character:FindFirstChild('HumanoidRootPart')
@@ -1240,7 +1258,13 @@ do
   if direction.Magnitude<.01 then return end
   jump_time=os.clock()
   humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
-  root.AssemblyLinearVelocity=direction.Unit*cfg.jump_forward+Vector3.new(0,cfg.jump_up,0)
+  local velocity=root.AssemblyLinearVelocity
+  local upward=humanoid.UseJumpPower and humanoid.JumpPower or math.sqrt(2*workspace.Gravity*humanoid.JumpHeight)
+  if cfg.long_jump then
+   root.AssemblyLinearVelocity=direction.Unit*cfg.jump_forward+Vector3.new(0,cfg.jump_up,0)
+  elseif cfg.jump_no_cooldown then
+   root.AssemblyLinearVelocity=Vector3.new(velocity.X,upward,velocity.Z)
+  end
  end)
  local touch_move={}
  local look_touch
@@ -1312,11 +1336,53 @@ do
  end
  table.insert(hub.restores,function()
    restore_camera(); restore_zoom(); restore_neck(); restore_collisions()
-   restore_speed(); restore_third()
+   restore_speed(); restore_third(); restore_back(); clear_walls()
  end)
  connect(Run.Stepped,function()
   local character=me.Character
-  if not cfg.noclip or not character then restore_collisions(); return end
+   if not cfg.noclip or not character then restore_collisions(); clear_walls(); return end
+   if cfg.noclip_mode=='Walls' then
+    restore_collisions()
+    local root=character:FindFirstChild('HumanoidRootPart')
+    if not root then clear_walls(); return end
+    local camera=workspace.CurrentCamera
+    local excluded={character}
+    if camera then table.insert(excluded,camera) end
+    local overlap=OverlapParams.new()
+    overlap.FilterType=Enum.RaycastFilterType.Exclude
+    overlap.FilterDescendantsInstances=excluded
+    local ray_params=RaycastParams.new()
+    ray_params.FilterType=Enum.RaycastFilterType.Exclude
+    ray_params.FilterDescendantsInstances=excluded
+    local ground=workspace:Raycast(root.Position,Vector3.new(0,-7,0),ray_params)
+    local wanted={}
+    for _,wall in ipairs(workspace:GetPartBoundsInRadius(root.Position,6,overlap)) do
+     -- Preserve supporting geometry; only disable nearby wall contacts.
+     if wall.CanCollide and wall.Anchored and wall~=(ground and ground.Instance)
+      and wall.Position.Y+wall.Size.Y*.5>root.Position.Y-1 then
+      wanted[wall]=true
+      local entries=wall_constraints[wall]
+      if not entries then entries={}; wall_constraints[wall]=entries end
+      for _,part in ipairs(character:GetDescendants()) do
+       if part:IsA('BasePart') and part.CanCollide and not entries[part] then
+        entries[part]=make('NoCollisionConstraint',{Part0=part,Part1=wall},part)
+       end
+      end
+     end
+    end
+    for wall,entries in pairs(wall_constraints) do
+     if not wanted[wall] then
+      for _,constraint in pairs(entries) do constraint:Destroy() end
+      wall_constraints[wall]=nil
+     else
+      for part,constraint in pairs(entries) do
+       if not part:IsDescendantOf(character) then constraint:Destroy(); entries[part]=nil end
+      end
+     end
+    end
+    return
+   end
+   clear_walls()
   for part,value in pairs(collisions) do
    if not part:IsDescendantOf(character) then
     if part.Parent then part.CanCollide=value end
@@ -1398,8 +1464,28 @@ do
      end
     end
   else restore_zoom() end
-  local character=me.Character
-  if neck_state and (not character or not neck_state.joint:IsDescendantOf(character)) then restore_neck() end
+   local character=me.Character
+   if back_state and (not character or not back_state.joint:IsDescendantOf(character)) then restore_back() end
+   if cfg.back_lean and character then
+    if not back_state then
+     local fallback
+     for _,joint in ipairs(character:GetDescendants()) do
+      if joint:IsA('Motor6D') then
+       if joint.Name=='Waist' then back_state={joint=joint,c0=joint.C0}; break end
+       if joint.Name=='RootJoint' or joint.Name=='Root' then fallback=joint end
+      end
+     end
+     if not back_state and fallback then back_state={joint=fallback,c0=fallback.C0} end
+    end
+    if back_state then
+     local joint=back_state.joint
+     if joint.Part0 then
+      local axis=back_state.c0:VectorToObjectSpace(joint.Part0.CFrame:VectorToObjectSpace(character:GetPivot().RightVector))
+      joint.C0=back_state.c0*CFrame.fromAxisAngle(axis,math.rad(cfg.back_angle))
+     end
+    end
+   else restore_back() end
+   if neck_state and (not character or not neck_state.joint:IsDescendantOf(character)) then restore_neck() end
   if cfg.anti_aim and character then
    if not neck_state then
     for _,joint in ipairs(character:GetDescendants()) do
