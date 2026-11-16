@@ -27,7 +27,8 @@ local cfg = {boxes=true, skeleton=true, enemies=false, arms=false, weapon=false,
   esp_icons=true, icon_size=32,
   freecam=false, freecam_speed=40, third_person=false, third_distance=12,
   trigger=false, trigger_delay=.15, trigger_range=500,
-  anti_aim=false, head_pitch=75, noclip=false}
+  anti_aim=false, head_pitch=75, noclip=false,
+  speedhack=false, move_speed=24, long_jump=false, jump_forward=45, jump_up=40}
 local function connect(signal, fn)
  local c = signal:Connect(fn); table.insert(hub.connections,c); return c
 end
@@ -186,6 +187,13 @@ slider(world,'Freecam speed','freecam_speed',5,150)
 toggle(world,'Third person','third_person')
 slider(world,'Third person distance','third_distance',5,40)
 toggle(world,'Noclip','noclip')
+toggle(world,'Speedhack','speedhack')
+slider(world,'Movement speed','move_speed',16,80)
+toggle(world,'Long jump / mobile jump button','long_jump')
+slider(world,'Jump forward speed','jump_forward',20,100)
+slider(world,'Jump upward speed','jump_up',20,80)
+local movement_status=label(world,'Noclip is client-side: server position corrections can still return you back.',UDim2.new(1,-8,0,52))
+movement_status.TextWrapped=true
 local inventory_status=label(world,'Item granting unavailable: no verified server grant API. Local copies are not inventory items.',UDim2.new(1,-8,0,64))
 inventory_status.TextWrapped=true
 for _,x in ipairs({{'Camera aim (toggle)','aim'},{'Silent aim / guns + bow','silent'},{'Visibility check','visible'},{'Ignore teammates','team'}}) do toggle(a,x[1],x[2]) end
@@ -1186,6 +1194,54 @@ do
  local collisions=setmetatable({},{__mode='k'})
  local next_shot=0
  local free_frame
+ local speed_state
+ local third_base,third_applied,third_camera
+ local body_visibility=setmetatable({},{__mode='k'})
+ local jump_time=0
+ local free_button=button(gui,'FREECAM: OFF',UDim2.fromOffset(154,44),UDim2.new(1,-170,0,70))
+ connect(free_button.Activated,function()
+  cfg.freecam=not cfg.freecam
+  if cfg.freecam then set_menu(false) end
+ end)
+ local function restore_speed()
+  if speed_state then
+   if speed_state.humanoid.Parent then speed_state.humanoid.WalkSpeed=speed_state.speed end
+   speed_state=nil
+  end
+ end
+ local function restore_third()
+  if third_camera and third_camera.Parent and third_camera.CFrame==third_applied then
+   third_camera.CFrame=third_base
+  end
+  third_base=nil; third_applied=nil; third_camera=nil
+  for part,value in pairs(body_visibility) do
+   if part.Parent then part.LocalTransparencyModifier=value end
+   body_visibility[part]=nil
+  end
+ end
+ connect(Run.Heartbeat,function()
+  local character=me.Character
+  local humanoid=character and character:FindFirstChildOfClass('Humanoid')
+  if speed_state and speed_state.humanoid~=humanoid then restore_speed() end
+  if cfg.speedhack and humanoid and humanoid.Health>0 and not cfg.freecam then
+   if not speed_state then speed_state={humanoid=humanoid,speed=humanoid.WalkSpeed} end
+   humanoid.WalkSpeed=cfg.move_speed
+  else restore_speed() end
+ end)
+ connect(Input.JumpRequest,function()
+  if not cfg.long_jump or cfg.freecam or panel.Visible or Input:GetFocusedTextBox() or os.clock()-jump_time<.4 then return end
+  local character=me.Character
+  local humanoid=character and character:FindFirstChildOfClass('Humanoid')
+  local root=character and character:FindFirstChild('HumanoidRootPart')
+  if not humanoid or not root or humanoid.Health<=0 or root.Anchored or humanoid.Sit or humanoid.FloorMaterial==Enum.Material.Air then return end
+  local direction=humanoid.MoveDirection
+  if direction.Magnitude<.05 then direction=root.CFrame.LookVector end
+  direction=Vector3.new(direction.X,0,direction.Z)
+  if direction.Magnitude<.01 then return end
+  jump_time=os.clock()
+  humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+  root.AssemblyLinearVelocity=direction.Unit*cfg.jump_forward+Vector3.new(0,cfg.jump_up,0)
+ end)
  local touch_move={}
  local look_touch
  local touch_look=Vector2.zero
@@ -1255,7 +1311,8 @@ do
   end
  end
  table.insert(hub.restores,function()
-  restore_camera(); restore_zoom(); restore_neck(); restore_collisions()
+   restore_camera(); restore_zoom(); restore_neck(); restore_collisions()
+   restore_speed(); restore_third()
  end)
  connect(Run.Stepped,function()
   local character=me.Character
@@ -1274,13 +1331,15 @@ do
   end
  end)
  local extra_render='OcelExtras_'..tostring(me.UserId)
- Run:BindToRenderStep(extra_render,Enum.RenderPriority.Camera.Value+10,function(dt)
+  Run:BindToRenderStep(extra_render,Enum.RenderPriority.Last.Value+10,function(dt)
+   free_button.Text=cfg.freecam and 'FREECAM: ON' or 'FREECAM: OFF'
   touch_controls.Visible=Input.TouchEnabled and cfg.freecam and not panel.Visible
   if not touch_controls.Visible then
    table.clear(touch_move); look_touch=nil; touch_look=Vector2.zero
   end
-  local camera=workspace.CurrentCamera
-  if not camera then return end
+   local camera=workspace.CurrentCamera
+   if not camera then return end
+   if not cfg.third_person or cfg.freecam or third_camera~=camera then restore_third() end
   if camera_state and camera_state.camera~=camera then restore_camera() end
   if cfg.freecam then
    if not camera_state then
@@ -1314,7 +1373,30 @@ do
    me.CameraMode=Enum.CameraMode.Classic
    me.CameraMinZoomDistance=0
    me.CameraMaxZoomDistance=cfg.third_distance
-   me.CameraMinZoomDistance=cfg.third_distance
+    me.CameraMinZoomDistance=cfg.third_distance
+    local base=camera.CFrame
+    if third_camera==camera and base==third_applied then base=third_base end
+    local character=me.Character
+    local head=character and character:FindFirstChild('Head')
+    if head then
+     local origin=head.Position+Vector3.new(0,.4,0)
+     local offset=-base.LookVector*cfg.third_distance
+     local params=RaycastParams.new()
+     params.FilterType=Enum.RaycastFilterType.Exclude
+     params.FilterDescendantsInstances={character,camera}
+     local hit=workspace:Raycast(origin,offset,params)
+     local distance=hit and math.max(.3,hit.Distance-.35) or cfg.third_distance
+     third_base=base; third_camera=camera
+     third_applied=CFrame.new(origin-base.LookVector*distance)*base.Rotation
+     camera.CFrame=third_applied
+     camera.Focus=CFrame.new(origin)
+     for _,part in ipairs(character:GetDescendants()) do
+      if part:IsA('BasePart') then
+       if body_visibility[part]==nil then body_visibility[part]=part.LocalTransparencyModifier end
+       part.LocalTransparencyModifier=0
+      end
+     end
+    end
   else restore_zoom() end
   local character=me.Character
   if neck_state and (not character or not neck_state.joint:IsDescendantOf(character)) then restore_neck() end
