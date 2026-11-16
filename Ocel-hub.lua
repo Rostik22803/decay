@@ -29,7 +29,8 @@ local cfg = {boxes=true, skeleton=true, enemies=false, arms=false, weapon=false,
   trigger=false, trigger_delay=.15, trigger_range=500,
   anti_aim=false, head_pitch=75, noclip=false,
   speedhack=false, move_speed=24, long_jump=false, jump_forward=45, jump_up=40,
-  jump_no_cooldown=false, back_lean=false, back_angle=35, noclip_mode='Walls'}
+  jump_no_cooldown=false, back_lean=false, back_angle=35, noclip_mode='Walls',
+  trigger_burst=false, burst_gap=.12, burst_pause=.5}
 local function connect(signal, fn)
  local c = signal:Connect(fn); table.insert(hub.connections,c); return c
 end
@@ -179,6 +180,9 @@ local farm_status=label(world,'Equip a gathering tool. No auto movement.',UDim2.
 farm_status.TextWrapped=true; farm_status.TextYAlignment=Enum.TextYAlignment.Top
 local a=pages.Aim
 toggle(a,'Trigger bot / crosshair','trigger')
+toggle(a,'Two-shot trigger burst (client requests)','trigger_burst')
+slider(a,'Burst shot interval','burst_gap',.05,.5)
+slider(a,'Pause between bursts','burst_pause',.2,2)
 slider(a,'Trigger interval / seconds','trigger_delay',.05,2)
 slider(a,'Trigger range','trigger_range',10,1500)
 toggle(a,'Head down (local pose)','anti_aim')
@@ -1198,11 +1202,26 @@ do
  local camera_state, zoom_state, neck_state
  local collisions=setmetatable({},{__mode='k'})
  local next_shot=0
+ local burst_second=false
+ local jump_state
+ local cooldown_scripts=setmetatable({},{__mode='k'})
+ local function restore_jump()
+  for object,disabled in pairs(cooldown_scripts) do
+   if object.Parent then object.Disabled=disabled end
+   cooldown_scripts[object]=nil
+  end
+  if jump_state and jump_state.humanoid.Parent then
+   jump_state.humanoid:SetStateEnabled(Enum.HumanoidStateType.Jumping,jump_state.enabled)
+  end
+  jump_state=nil
+ end
  local free_frame
  local speed_state
  local third_base,third_applied,third_camera
  local body_visibility=setmetatable({},{__mode='k'})
  local jump_time=0
+ local jump_until=0
+ local jump_character
  local back_state
  local wall_constraints={}
  local function restore_back()
@@ -1244,19 +1263,49 @@ do
    if not speed_state then speed_state={humanoid=humanoid,speed=humanoid.WalkSpeed} end
    humanoid.WalkSpeed=cfg.move_speed
   else restore_speed() end
+  if jump_state and jump_state.humanoid~=humanoid then restore_jump() end
+  if cfg.jump_no_cooldown and humanoid then
+   if not jump_state then jump_state={humanoid=humanoid,enabled=humanoid:GetStateEnabled(Enum.HumanoidStateType.Jumping)} end
+   for _,object in ipairs(character:GetDescendants()) do
+    if object:IsA('LocalScript') and object.Name=='JumpCooldown' then
+     if cooldown_scripts[object]==nil then cooldown_scripts[object]=object.Disabled end
+     object.Disabled=true
+    end
+   end
+   humanoid:SetStateEnabled(Enum.HumanoidStateType.Jumping,true)
+  else restore_jump() end
  end)
- connect(Input.JumpRequest,function()
+ local function request_jump()
   if not (cfg.long_jump or cfg.jump_no_cooldown) or cfg.freecam or panel.Visible or Input:GetFocusedTextBox() then return end
+  jump_until=os.clock()+.2; jump_character=me.Character
+ end
+ connect(Input.JumpRequest,request_jump)
+ local jump_button=button(gui,'JUMP',UDim2.fromOffset(76,54),UDim2.new(1,-105,1,-235))
+ connect(jump_button.Activated,request_jump)
+ connect(Run.PreSimulation,function()
+  jump_button.Visible=Input.TouchEnabled and (cfg.long_jump or cfg.jump_no_cooldown) and not cfg.freecam and not panel.Visible
+  if jump_until==0 then return end
+  if os.clock()>jump_until or me.Character~=jump_character or cfg.freecam or panel.Visible or not (cfg.long_jump or cfg.jump_no_cooldown) then jump_until=0; return end
   if not cfg.jump_no_cooldown and os.clock()-jump_time<.4 then return end
   local character=me.Character
   local humanoid=character and character:FindFirstChildOfClass('Humanoid')
   local root=character and character:FindFirstChild('HumanoidRootPart')
-  if not humanoid or not root or humanoid.Health<=0 or root.Anchored or humanoid.Sit or humanoid.FloorMaterial==Enum.Material.Air then return end
+  if not humanoid or not root or humanoid.Health<=0 or root.Anchored or humanoid.Sit then return end
+  local params=RaycastParams.new()
+  params.FilterType=Enum.RaycastFilterType.Exclude
+  params.FilterDescendantsInstances={character}
+  params.RespectCanCollide=true
+  local leg=character:FindFirstChild('Left Leg')
+  local height=root.Size.Y*.5+humanoid.HipHeight+(leg and leg.Size.Y or 0)
+  local support=workspace:Raycast(root.Position,Vector3.new(0,-height-.65,0),params)
+  if not support or support.Normal.Y<.5 then return end
   local direction=humanoid.MoveDirection
   if direction.Magnitude<.05 then direction=root.CFrame.LookVector end
   direction=Vector3.new(direction.X,0,direction.Z)
   if direction.Magnitude<.01 then return end
   jump_time=os.clock()
+  jump_until=0
+  if cfg.jump_no_cooldown then humanoid:SetStateEnabled(Enum.HumanoidStateType.Jumping,true) end
   humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
   local velocity=root.AssemblyLinearVelocity
   local upward=humanoid.UseJumpPower and humanoid.JumpPower or math.sqrt(2*workspace.Gravity*humanoid.JumpHeight)
@@ -1336,7 +1385,7 @@ do
  end
  table.insert(hub.restores,function()
    restore_camera(); restore_zoom(); restore_neck(); restore_collisions()
-   restore_speed(); restore_third(); restore_back(); clear_walls()
+   restore_speed(); restore_third(); restore_back(); clear_walls(); restore_jump()
  end)
  connect(Run.Stepped,function()
   local character=me.Character
@@ -1501,7 +1550,8 @@ do
     joint.C0=neck_state.c0*CFrame.fromAxisAngle(axis,-math.rad(cfg.head_pitch))
    end
   else restore_neck() end
-  if not cfg.trigger or cfg.freecam or panel.Visible or Input:GetFocusedTextBox() or os.clock()<next_shot then return end
+   if not cfg.trigger or cfg.freecam or panel.Visible or Input:GetFocusedTextBox() then burst_second=false; return end
+   if os.clock()<next_shot then return end
   local humanoid=character and character:FindFirstChildOfClass('Humanoid')
   if not humanoid or humanoid.Health<=0 then return end
   local params=RaycastParams.new()
@@ -1509,14 +1559,18 @@ do
   params.FilterDescendantsInstances={character,camera}
   local ray=camera:ViewportPointToRay(camera.ViewportSize.X*.5,camera.ViewportSize.Y*.5)
   local hit=workspace:Raycast(ray.Origin,ray.Direction*cfg.trigger_range,params)
-  if not hit then return end
+   if not hit then burst_second=false; return end
   local target
   for _,player in ipairs(Players:GetPlayers()) do
    if player~=me and player.Character and hit.Instance:IsDescendantOf(player.Character) then target=player; break end
   end
-  if not target or not eligible(target,camera) then return end
-  next_shot=os.clock()+cfg.trigger_delay
-  local tool=character:FindFirstChildOfClass('Tool')
+   if not target or not eligible(target,camera) then burst_second=false; return end
+   local tool=character:FindFirstChildOfClass('Tool')
+   if not tool and type(mouse1click)~='function' then burst_second=false; return end
+   if cfg.trigger_burst then
+    next_shot=os.clock()+(burst_second and cfg.burst_pause or cfg.burst_gap)
+    burst_second=not burst_second
+   else next_shot=os.clock()+cfg.trigger_delay; burst_second=false end
   if tool then tool:Activate()
   elseif type(mouse1click)=='function' then mouse1click() end
  end)
