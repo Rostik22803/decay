@@ -198,7 +198,7 @@ toggle(world,'Back lean / local pose','back_lean')
 slider(world,'Back lean angle','back_angle',-75,75)
 toggle(world,'Speedhack','speedhack')
 slider(world,'Movement speed','move_speed',16,80)
-toggle(world,'Long jump / mobile jump button','long_jump')
+toggle(world,'Long jump / experimental, may rubberband','long_jump')
 slider(world,'Jump forward speed','jump_forward',20,100)
 slider(world,'Jump upward speed','jump_up',20,80)
 local movement_status=label(world,'Noclip is client-side: server position corrections can still return you back.',UDim2.new(1,-8,0,52))
@@ -624,7 +624,16 @@ local function view_chams(camera)
 end
 local tick_acc=0
 local render_name='OcelHubCamera_'..tostring(math.floor(os.clock()*1e6))
-Run:BindToRenderStep(render_name,Enum.RenderPriority.Camera.Value+2,function(dt)
+Run:BindToRenderStep(render_name..'_Aim',Enum.RenderPriority.Camera.Value+2,function(dt)
+ local camera=workspace.CurrentCamera
+ if camera and cfg.aim and target and target.Parent and not panel.Visible and not cfg.freecam then
+  local point=target.Position+target.AssemblyLinearVelocity*cfg.aim_lead
+  local desired=CFrame.lookAt(camera.CFrame.Position,point)
+  if cfg.aim_mode=='Instant' then camera.CFrame=desired
+  else camera.CFrame=camera.CFrame:Lerp(desired,1-math.exp(-cfg.smooth*dt)) end
+ end
+end)
+Run:BindToRenderStep(render_name,Enum.RenderPriority.Last.Value+20,function(dt)
  local camera=workspace.CurrentCamera; if not camera then return end
  fit(); local center=camera.ViewportSize*.5
  fov_circle.Visible=cfg.aim or cfg.silent; fov_circle.Position=UDim2.fromOffset(center.X-cfg.fov,center.Y-cfg.fov); fov_circle.Size=UDim2.fromOffset(cfg.fov*2,cfg.fov*2)
@@ -658,12 +667,6 @@ Run:BindToRenderStep(render_name,Enum.RenderPriority.Camera.Value+2,function(dt)
    for i=r.used+1,#r.lines do r.lines[i].Visible=false end
   end
  end
-  if cfg.aim and target and not panel.Visible then
-   local point=target.Position+target.AssemblyLinearVelocity*cfg.aim_lead
-   local desired=CFrame.lookAt(camera.CFrame.Position,point)
-   if cfg.aim_mode=='Instant' then camera.CFrame=desired
-   else camera.CFrame=camera.CFrame:Lerp(desired,1-math.exp(-cfg.smooth*dt)) end
-  end
  update_bright()
  tick_acc=tick_acc+dt
  if tick_acc>.15 then
@@ -1307,13 +1310,9 @@ do
   jump_until=0
   if cfg.jump_no_cooldown then humanoid:SetStateEnabled(Enum.HumanoidStateType.Jumping,true) end
   humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
-  local velocity=root.AssemblyLinearVelocity
-  local upward=humanoid.UseJumpPower and humanoid.JumpPower or math.sqrt(2*workspace.Gravity*humanoid.JumpHeight)
-  if cfg.long_jump then
-   root.AssemblyLinearVelocity=direction.Unit*cfg.jump_forward+Vector3.new(0,cfg.jump_up,0)
-  elseif cfg.jump_no_cooldown then
-   root.AssemblyLinearVelocity=Vector3.new(velocity.X,upward,velocity.Z)
-  end
+   if cfg.long_jump then
+    root.AssemblyLinearVelocity=direction.Unit*cfg.jump_forward+Vector3.new(0,cfg.jump_up,0)
+   end
  end)
  local touch_move={}
  local look_touch
@@ -1578,7 +1577,8 @@ do
 end
 function hub:Destroy()
  if not self.alive then return end; self.alive=false
- Run:UnbindFromRenderStep(render_name)
+  Run:UnbindFromRenderStep(render_name)
+  Run:UnbindFromRenderStep(render_name..'_Aim')
  for _,c in ipairs(self.connections) do c:Disconnect() end
  for exports,original in pairs(self.hooks) do exports.Shoot=original end
  for _,restore in ipairs(self.restores) do restore() end
