@@ -24,8 +24,10 @@ local cfg = {boxes=true, skeleton=true, enemies=false, arms=false, weapon=false,
  cloth_color=Color3.fromRGB(235,225,175), magic_tools=false, tools_range=12, tools_auto=false,
  esp_names=true, esp_distance=true, esp_health=true, esp_weapon=true, esp_visibility=true,
  potato=false, bots=true, sleepers=true, esp_armor=true, potato_distance=300,
- esp_icons=true, icon_size=32, weapon_icons=true, armor_icons=true, esp_health_text=false,
- skins_enabled=false}
+  esp_icons=true, icon_size=32,
+  freecam=false, freecam_speed=40, third_person=false, third_distance=12,
+  trigger=false, trigger_delay=.15, trigger_range=500,
+  anti_aim=false, head_pitch=75, noclip=false}
 local function connect(signal, fn)
  local c = signal:Connect(fn); table.insert(hub.connections,c); return c
 end
@@ -103,7 +105,7 @@ end)
 connect(Input.InputEnded,function(i) if i==dragging then dragging=nil end end)
 local tabs=make('Frame',{BackgroundTransparency=1,Size=UDim2.new(1,-24,0,36),Position=UDim2.fromOffset(12,57)},panel)
 local pages={}
-local tab_names={'Visuals','Chams','Aim','World','Skins','Colors','System'}
+local tab_names={'Visuals','Chams','Aim','World','Colors','System'}
 for n,name in ipairs(tab_names) do
  local page=make('ScrollingFrame',{Size=UDim2.new(1,-24,1,-111),Position=UDim2.fromOffset(12,101),BackgroundTransparency=1,BorderSizePixel=0,ScrollBarThickness=3,AutomaticCanvasSize=Enum.AutomaticSize.Y,CanvasSize=UDim2.new(),Visible=n==1},panel)
  make('UIListLayout',{Padding=UDim.new(0,7),SortOrder=Enum.SortOrder.LayoutOrder},page)
@@ -122,7 +124,6 @@ local function toggle(page,text,key)
  local r=row(page,text); local b=button(r,'',UDim2.fromOffset(58,30),UDim2.new(1,-68,.5,-15))
  local function update() b.Text=cfg[key] and 'ON' or 'OFF'; b.BackgroundColor3=cfg[key] and Color3.fromRGB(220,220,225) or Color3.fromRGB(40,40,44); b.TextColor3=cfg[key] and Color3.new(0,0,0) or Color3.new(1,1,1) end
  connect(b.Activated,function() cfg[key]=not cfg[key]; update() end); update()
- return update
 end
 local function cycle(page,text,key,values)
  local r=row(page,text); local b=button(r,cfg[key],UDim2.fromOffset(134,30),UDim2.new(1,-144,.5,-15))
@@ -150,11 +151,9 @@ cycle(v,'Box style','box_style',{'Corners','Rectangle'})
 slider(v,'Line thickness','width',1,4)
 slider(v,'Draw distance','distance',100,3000)
 slider(v,'Tracer lifetime','lifetime',.1,3)
-for _,entry in ipairs({{'Player names','esp_names'},{'Player distance','esp_distance'},{'Health bar','esp_health'},{'Weapon text','esp_weapon'},{'Armor text','esp_armor'},{'Sleeper ESP','sleepers'},{'Bot ESP / scientists','bots'},{'Visible green / hidden red','esp_visibility'},{'Potato graphics','potato'}}) do toggle(v,entry[1],entry[2]) end
+for _,entry in ipairs({{'Player names','esp_names'},{'Player distance','esp_distance'},{'Health bar','esp_health'},{'Held weapon','esp_weapon'},{'Equipped armor','esp_armor'},{'Sleeper ESP','sleepers'},{'Bot ESP / scientists','bots'},{'Visible green / hidden red','esp_visibility'},{'Potato graphics','potato'}}) do toggle(v,entry[1],entry[2]) end
 slider(v,'Potato world draw distance','potato_distance',100,1000)
-toggle(v,'Weapon pictures','weapon_icons')
-toggle(v,'Armor pictures','armor_icons')
-toggle(v,'Numeric health','esp_health_text')
+toggle(v,'Equipment pictures','esp_icons')
 slider(v,'Equipment picture size','icon_size',22,46)
 local materials={'Neon','ForceField','SmoothPlastic','Glass','Metal','Foil'}
 local chams=pages.Chams
@@ -177,6 +176,18 @@ slider(world,'Magic reach (server limited)','magic_range',2,30)
 local farm_status=label(world,'Equip a gathering tool. No auto movement.',UDim2.new(1,-8,0,72))
 farm_status.TextWrapped=true; farm_status.TextYAlignment=Enum.TextYAlignment.Top
 local a=pages.Aim
+toggle(a,'Trigger bot / crosshair','trigger')
+slider(a,'Trigger interval / seconds','trigger_delay',.05,2)
+slider(a,'Trigger range','trigger_range',10,1500)
+toggle(a,'Head down (local pose)','anti_aim')
+slider(a,'Head downward angle','head_pitch',0,85)
+toggle(world,'Freecam / touch controls','freecam')
+slider(world,'Freecam speed','freecam_speed',5,150)
+toggle(world,'Third person','third_person')
+slider(world,'Third person distance','third_distance',5,40)
+toggle(world,'Noclip','noclip')
+local inventory_status=label(world,'Item granting unavailable: no verified server grant API. Local copies are not inventory items.',UDim2.new(1,-8,0,64))
+inventory_status.TextWrapped=true
 for _,x in ipairs({{'Camera aim (toggle)','aim'},{'Silent aim / guns + bow','silent'},{'Visibility check','visible'},{'Ignore teammates','team'}}) do toggle(a,x[1],x[2]) end
 cycle(a,'Target part','part',{'Head','HumanoidRootPart'})
 slider(a,'FOV radius / pixels','fov',30,400)
@@ -454,8 +465,8 @@ local function equipment(character)
 end
 local function equipment_pictures(r,gear,mid,y)
  local items={}
- if cfg.weapon_icons and gear.weapon~='Unknown' then table.insert(items,{name=gear.weapon,caption=cfg.esp_weapon}) end
- if cfg.armor_icons then for _,name in ipairs(gear.armor_items) do table.insert(items,{name=name,caption=cfg.esp_armor}) end end
+ if cfg.esp_weapon and gear.weapon~='Unknown' then table.insert(items,gear.weapon) end
+ if cfg.esp_armor then for _,name in ipairs(gear.armor_items) do table.insert(items,name) end end
  local count=math.min(8,#items)
  r.icon_root.Visible=cfg.esp_icons and count>0
  if not r.icon_root.Visible then return end
@@ -470,13 +481,13 @@ local function equipment_pictures(r,gear,mid,y)
    local caption=label(frame,'',UDim2.new()); caption.TextSize=9; caption.TextXAlignment=Enum.TextXAlignment.Center; caption.TextTruncate=Enum.TextTruncate.AtEnd
    card={frame=frame,image=image,caption=caption}; r.icons[i]=card
   end
-  local name=items[i].name; local data=equipment_catalog[name]
+  local name=items[i]; local data=equipment_catalog[name]
   local image=data and (data.Image or data.Icon or data.ImageId)
   if type(image)=='number' then image='rbxassetid://'..image end
   if type(image)=='string' and image:match('^%d+$') then image='rbxassetid://'..image end
   card.frame.Visible=true; card.frame.Position=UDim2.fromOffset((i-1)*(size+4),0); card.frame.Size=UDim2.fromOffset(size,size+18)
   card.image.Size=UDim2.fromOffset(size,size); card.image.Image=type(image)=='string' and image or ''
-  card.caption.Position=UDim2.fromOffset(1,size); card.caption.Size=UDim2.fromOffset(size-2,16); card.caption.Text=name; card.caption.Visible=items[i].caption
+  card.caption.Position=UDim2.fromOffset(1,size); card.caption.Size=UDim2.fromOffset(size-2,16); card.caption.Text=name
  end
  for i=count+1,#r.icons do r.icons[i].frame.Visible=false end
 end
@@ -490,11 +501,7 @@ local function player_details(r,player,camera,c,min,max)
   local origin=me.Character and me.Character:FindFirstChild('HumanoidRootPart')
   table.insert(details,tostring(math.floor((character_root(c).Position-(origin and origin.Position or camera.CFrame.Position)).Magnitude))..' st')
  end
- if cfg.esp_health_text then
-  local hp,max_hp=character_health(c)
-  if hp then table.insert(details,'HP: '..math.ceil(hp)..(max_hp and (' / '..math.ceil(max_hp)) or '')) end
- end
- if cfg.esp_weapon or cfg.esp_armor or cfg.weapon_icons or cfg.armor_icons then
+ if cfg.esp_weapon or cfg.esp_armor then
   local gear=equipment(c)
   if cfg.esp_weapon then table.insert(details,'Weapon: '..gear.weapon) end
   if cfg.esp_armor then table.insert(details,'Armor: '..gear.armor) end
@@ -592,8 +599,7 @@ local function view_chams(camera)
     local name=part.Name:lower()
     local arm=name:find('arm') or name:find('hand')
     local enabled=arm and cfg.arms or not arm and cfg.weapon
-      local skin_owned=(hub.skin_model and part:IsDescendantOf(hub.skin_model)) or (hub.skin_overlay and part:IsDescendantOf(hub.skin_overlay))
-      if enabled and not skin_owned then apply_material(part,arm and 'arms' or 'weapon',modified,wanted) end
+     if enabled then apply_material(part,arm and 'arms' or 'weapon',modified,wanted) end
    end
   end
  end
@@ -811,7 +817,7 @@ end
 local item_data
 pcall(function() item_data=require(RS.ItemData).Items end)
 local selected_slot
-local function selected_item()
+local function equipped_item()
  if not selected_slot or not selected_slot.Parent or not selected_slot.Value then
   local player_gui=me:FindFirstChild('PlayerGui')
   selected_slot=nil
@@ -825,188 +831,12 @@ local function selected_item()
  local slot=selected_slot and selected_slot:IsA('ObjectValue') and selected_slot.Value
  local item=slot and slot:FindFirstChild('ItemName')
  local data=item and item_data and item_data[item.Value]
- if data then return item.Value,data,slot end
-end
-local function equipped_item()
- local name,data,slot=selected_item()
- if data and data.ToolInfo then return name,data,slot end
+ if data and data.ToolInfo then return item.Value,data,slot end
 end
 local function equipped_tool()
  local name,data,slot=equipped_item()
  if data and data.Gather then return name,data,slot end
 end
-local skin_ui={selected={},hidden={},hide_connections={},links={},catalog=nil,current=nil,applied=nil,next_retry=0,forcing=false}
-skin_ui.sync_toggle=toggle(pages.Skins,'Local skin changer','skins_enabled')
-skin_ui.title=label(pages.Skins,'Equip a weapon to browse its skins.',UDim2.new(1,-8,0,34))
-skin_ui.title.TextWrapped=true
-skin_ui.status=label(pages.Skins,'Local visuals only. No inventory changes.',UDim2.new(1,-8,0,58))
-skin_ui.status.TextWrapped=true; skin_ui.status.TextYAlignment=Enum.TextYAlignment.Top
-skin_ui.gallery=make('Frame',{BackgroundTransparency=1,Size=UDim2.new(1,-2,0,0)},pages.Skins)
-local function skin_restore()
- for _,connection in ipairs(skin_ui.hide_connections) do connection:Disconnect() end
- table.clear(skin_ui.hide_connections)
- if hub.skin_overlay then hub.skin_overlay:Destroy() end
- for object,state in pairs(skin_ui.hidden) do
-  for key,value in pairs(state.values) do pcall(function() object[key]=value end) end
- end
- hub.skin_overlay=nil; hub.skin_model=nil
- table.clear(skin_ui.hidden); table.clear(skin_ui.links)
- skin_ui.applied=nil
-end
-local function skin_hide(object)
- if skin_ui.hidden[object] then return end
- local values
- if object:IsA('BasePart') then values={Transparency=1,LocalTransparencyModifier=1}
- elseif object:IsA('Decal') or object:IsA('Texture') then values={Transparency=1}
- elseif object:IsA('SurfaceGui') or object:IsA('BillboardGui') then values={Enabled=false}
- else return end
- local state={values={},forced=values}
- skin_ui.hidden[object]=state
- for key,value in pairs(values) do
-  state.values[key]=object[key]
-  table.insert(skin_ui.hide_connections,object:GetPropertyChangedSignal(key):Connect(function()
-   if skin_ui.forcing or not hub.alive or not hub.skin_model then return end
-   if object[key]~=value then
-    state.values[key]=object[key]
-    skin_ui.forcing=true; object[key]=value; skin_ui.forcing=false
-   end
-  end))
-  skin_ui.forcing=true; object[key]=value; skin_ui.forcing=false
- end
-end
-local function skin_source(name,skin)
- local system=RS:FindFirstChild('GunSystem')
- local models=system and system:FindFirstChild('Models')
- local source=models and models:FindFirstChild(name..'-'..skin)
- if source then return source end
- local tools=RS:FindFirstChild('ToolSystem'); local viewmodels=tools and tools:FindFirstChild('Viewmodels')
- local weapon=viewmodels and viewmodels:FindFirstChild(name)
- return weapon and weapon:FindFirstChild(name..'-'..skin)
-end
-local function skin_live(name)
- local camera=workspace.CurrentCamera
- if not camera then return end
- for _,object in ipairs(camera:GetDescendants()) do
-   local cosmetic=hub.skin_overlay and (object==hub.skin_overlay or object:IsDescendantOf(hub.skin_overlay))
-   if not cosmetic and object:IsA('Model') and object.Name==name and (object:FindFirstChild('GunComponents') or object:FindFirstChild('ToolComponents')) then return object end
- end
-end
-local function skin_apply(live,source)
- local function grip(model)
-  local components=model:FindFirstChild('GunComponents') or model:FindFirstChild('ToolComponents')
-  return components and (components:FindFirstChild('Handle') or components:FindFirstChild('Barrel')) or model.PrimaryPart or model:FindFirstChildWhichIsA('BasePart',true)
- end
- local live_grip,source_grip=grip(live),grip(source)
- if not live_grip or not source_grip then error('Weapon grip missing; original model kept visible') end
- local cosmetic=source:Clone()
- if not cosmetic then error('Skin model cannot be cloned') end
- cosmetic.Name='OcelSkinVisual'
- hub.skin_overlay=cosmetic
- local links={}
- local visible_count=0
- for _,object in ipairs(cosmetic:GetDescendants()) do
-  if object:IsA('BasePart') then
-   -- Preserve the skin's complete authored layout, not per-name live part poses.
-   local anchor=live_grip
-   local offset=source_grip.CFrame:ToObjectSpace(object.CFrame)
-   object.Anchored=true; object.CanCollide=false; object.CanTouch=false; object.CanQuery=false; object.CastShadow=false
-   object.LocalTransparencyModifier=0
-   if object.Transparency<1 then visible_count=visible_count+1 end
-   table.insert(links,{visual=object,anchor=anchor,offset=offset})
-  elseif object:IsA('LuaSourceContainer') or object:IsA('JointInstance') or object:IsA('Constraint') or object:IsA('Humanoid') or object:IsA('AnimationController') or object:IsA('Animator') or object:IsA('ParticleEmitter') or object:IsA('Beam') or object:IsA('Trail') or object:IsA('Sound') then
-   object:Destroy()
-  end
- end
- if visible_count==0 then error('Skin has no visible geometry; original model kept visible') end
- for _,link in ipairs(links) do link.visual.CFrame=link.anchor.CFrame*link.offset end
- skin_ui.links=links; hub.skin_model=live
- for _,object in ipairs(live:GetDescendants()) do skin_hide(object) end
- table.insert(skin_ui.hide_connections,live.DescendantAdded:Connect(function(object)
-  if hub.skin_model==live then skin_hide(object) end
- end))
- -- Publish the replacement only after all original geometry has been hidden.
- cosmetic.Parent=workspace.CurrentCamera
- return #links
-end
-local function skin_gallery(name,data)
- for _,child in ipairs(skin_ui.gallery:GetChildren()) do child:Destroy() end
- if not name then skin_ui.gallery.Size=UDim2.new(1,-2,0,0); return end
- local entries={{name='Original',key='',image=data.Image}}
- local skins=skin_ui.catalog and skin_ui.catalog[name]
- if type(skins)=='table' then
-  local names={}; for skin in pairs(skins) do table.insert(names,skin) end; table.sort(names)
-  for _,skin in ipairs(names) do table.insert(entries,{name=skin,key=skin,image=skins[skin]}) end
- end
- skin_ui.gallery.Size=UDim2.new(1,-2,0,math.ceil(#entries/3)*122)
- make('UIGridLayout',{CellSize=UDim2.new(1/3,-6,0,116),CellPadding=UDim2.fromOffset(6,6),SortOrder=Enum.SortOrder.LayoutOrder},skin_ui.gallery)
- for index,entry in ipairs(entries) do
-  local card=button(skin_ui.gallery,'',UDim2.new()); card.LayoutOrder=index
-  local image=entry.image
-  if type(image)=='number' then image='rbxassetid://'..image end
-  if type(image)=='string' and image:match('^%d+$') then image='rbxassetid://'..image end
-  make('ImageLabel',{BackgroundTransparency=1,Size=UDim2.new(1,-8,0,82),Position=UDim2.fromOffset(4,3),ScaleType=Enum.ScaleType.Fit,Image=type(image)=='string' and image or ''},card)
-  local text=label(card,entry.name,UDim2.new(1,-8,0,28),UDim2.fromOffset(4,85)); text.TextWrapped=true; text.TextSize=11; text.TextXAlignment=Enum.TextXAlignment.Center
-  card.Activated:Connect(function()
-   if entry.key~='' and not skin_source(name,entry.key) then
-    skin_ui.status.Text='Preview only: this skin model is not loaded. Current appearance unchanged.'; return
-   end
-   skin_ui.selected[name]=entry.key~='' and entry.key or nil
-   skin_ui.next_retry=0
-   skin_restore()
-   if entry.key~='' then cfg.skins_enabled=true; skin_ui.sync_toggle() end
-   skin_ui.status.Text='Selected: '..entry.name..'\nSkin takes priority over weapon chams.'
-  end)
- end
-end
-local skin_clock=0
-connect(Run.Heartbeat,function(dt)
- skin_clock=skin_clock+dt; if skin_clock<.35 then return end; skin_clock=0
- if not skin_ui.catalog then pcall(function() skin_ui.catalog=require(RS.ItemData).Skins end) end
- local name,data=selected_item()
- if data and not (data.BulletType or data.ToolInfo or data.Type=='Gun' or data.Type=='Tool') then name=nil; data=nil end
- if skin_ui.current~=name then
-  skin_restore(); skin_ui.current=name
-  skin_ui.next_retry=0
-  skin_ui.title.Text=name and ('In hands: '..name) or 'Equip a weapon to browse its skins.'
-  skin_gallery(name,data)
- end
- local selected=name and skin_ui.selected[name]
- if not cfg.skins_enabled or not selected then if skin_ui.applied then skin_restore() end; return end
- local live=skin_live(name)
- if not live then skin_ui.status.Text='Waiting for equipped viewmodel: '..name; return end
- if skin_ui.applied==live and hub.skin_overlay and hub.skin_overlay.Parent==workspace.CurrentCamera then return end
- if os.clock()<skin_ui.next_retry then return end
- skin_restore()
- local source=skin_source(name,selected)
- if not source then skin_ui.status.Text='Preview available, but skin model is not replicated: '..selected; return end
- local ok,count=pcall(skin_apply,live,source)
- if ok then
-  skin_ui.applied=live
-    skin_ui.status.Text=selected..' / cosmetic parts: '..count..'\nOriginal hidden; rigid skin layout. Weapon chams excluded.'
- else skin_restore(); skin_ui.next_retry=os.clock()+2; skin_ui.status.Text='Skin error: '..tostring(count) end
-end)
-skin_ui.render_name='OcelSkinVisual_'..tostring(math.floor(os.clock()*1e6))
-Run:BindToRenderStep(skin_ui.render_name,Enum.RenderPriority.Last.Value,function()
- if not skin_ui.applied then return end
- local camera=workspace.CurrentCamera
- if not cfg.skins_enabled or not camera or not skin_ui.applied:IsDescendantOf(camera) then skin_restore(); return end
- for object,state in pairs(skin_ui.hidden) do
-  if object.Parent then
-   for key,value in pairs(state.forced) do
-    if object[key]~=value then
-     state.values[key]=object[key]
-     skin_ui.forcing=true; object[key]=value; skin_ui.forcing=false
-    end
-   end
-  end
- end
- for _,link in ipairs(skin_ui.links) do
-  if link.visual.Parent then
-   if link.anchor.Parent then link.visual.LocalTransparencyModifier=0; link.visual.CFrame=link.anchor.CFrame*link.offset
-   else link.visual.LocalTransparencyModifier=1 end
-  end
- end
-end)
 local function resource_ancestor(part)
  local object=part
  while object and object~=workspace do
@@ -1027,13 +857,24 @@ local function farm_target(head,data)
  local best,best_distance
  for _,part in ipairs(workspace:GetPartBoundsInRadius(head.Position,reach,overlap)) do
   local model,kind=resource_ancestor(part)
-  local allowed=model and ((kind=='tree' and cfg.farm_trees and data.Gather.Wood) or (kind=='ore' and cfg.farm_ores and data.Gather.Stone))
+   local allowed=model and ((kind=='tree' and cfg.farm_trees and data.Gather.Wood) or (cfg.farm_mode~='Magic' and kind=='ore' and cfg.farm_ores and data.Gather.Stone))
   if allowed and part.CanQuery then
    local point=closest_point(part,head.Position)
    local offset=point-head.Position
    if offset.Magnitude<.01 then offset=part.Position-head.Position end
    if offset.Magnitude>.01 and offset.Magnitude<=reach then
-    local hit=workspace:Raycast(head.Position,offset.Unit*reach,ray_params)
+     -- Probe trunk center at head height first; keep surface aim as fallback.
+     local hit
+     if kind=='tree' and cfg.farm_mode=='Magic' then
+      local local_head=part.CFrame:PointToObjectSpace(head.Position)
+      local trunk=part.CFrame:PointToWorldSpace(Vector3.new(0,math.clamp(local_head.Y,-part.Size.Y*.5,part.Size.Y*.5),0))
+      local direction=trunk-head.Position
+      if direction.Magnitude>.01 then
+       local probe=workspace:Raycast(head.Position,direction.Unit*reach,ray_params)
+       if probe and probe.Instance:IsDescendantOf(model) then hit=probe; offset=direction end
+      end
+     end
+     hit=hit or workspace:Raycast(head.Position,offset.Unit*reach,ray_params)
     if hit and hit.Instance:IsDescendantOf(model) then
      local distance=(hit.Position-head.Position).Magnitude
      if not best_distance or distance<best_distance then best={model=model,direction=offset.Unit}; best_distance=distance end
@@ -1179,10 +1020,10 @@ local function shot_config(kind,slot,context)
   if not ballistics then ballistics=require(RS.GunSystem.Ballistics) end
   if kind=='BowShootModule' then
    local data=context and context.ItemData
-   if not data then local _,equipped=selected_item(); data=equipped end
+   if not data then local _,equipped=equipped_item(); data=equipped end
    config=ballistics.GetBowConfig(data)
   else
-   if not slot then local _,_,equipped=selected_item(); slot=equipped end
+   if not slot then local _,_,equipped=equipped_item(); slot=equipped end
    if not slot then return end
    local name=slot.ItemName.Value; local data=require(RS.ItemData).Items[name]
    config=ballistics.ApplyAmmo(ballistics.GetConfig(name,data),require(RS.AmmoTypes).Loaded(slot))
@@ -1340,10 +1181,182 @@ connect(Run.Heartbeat,function(dt)
  if not ok then next_farm=os.clock()+2; tools_status.Text='Auto attack: '..tostring(err) end
 end)
 status.Text='OCEL / client adapter\nWeapon modules connected: '..hooked..'\n'..(hooked>0 and 'Silent ray adapter installed. Server hit validation still applies.' or 'Silent / tracers unavailable: executor hook APIs or module access missing.')
+do
+ local camera_state, zoom_state, neck_state
+ local collisions=setmetatable({},{__mode='k'})
+ local next_shot=0
+ local free_frame
+ local touch_move={}
+ local look_touch
+ local touch_look=Vector2.zero
+ local touch_controls=make('Frame',{Name='FreecamTouch',BackgroundTransparency=1,Size=UDim2.fromScale(1,1),Visible=false},gui)
+ local look_pad=make('Frame',{Name='LookPad',BackgroundTransparency=1,Active=true,
+  Position=UDim2.fromScale(.48,0),Size=UDim2.fromScale(.52,.68)},touch_controls)
+ local pad=make('Frame',{BackgroundTransparency=1,AnchorPoint=Vector2.new(0,1),
+  Position=UDim2.new(0,20,1,-85),Size=UDim2.fromOffset(180,180)},touch_controls)
+ local function touch_button(text,x,y,direction,parent)
+  local b=button(parent or pad,text,UDim2.fromOffset(54,54),UDim2.fromOffset(x,y))
+  b.BackgroundTransparency=.25
+  connect(b.InputBegan,function(i)
+   if i.UserInputType==Enum.UserInputType.Touch then touch_move[i]=direction end
+  end)
+ end
+ touch_button('↑',60,0,Vector3.new(0,0,-1))
+ touch_button('↓',60,120,Vector3.new(0,0,1))
+ touch_button('←',0,60,Vector3.new(-1,0,0))
+ touch_button('→',120,60,Vector3.new(1,0,0))
+ local height_pad=make('Frame',{BackgroundTransparency=1,AnchorPoint=Vector2.new(1,1),
+  Position=UDim2.new(1,-24,1,-90),Size=UDim2.fromOffset(60,124)},touch_controls)
+ touch_button('+',0,0,Vector3.new(0,1,0),height_pad)
+ touch_button('−',0,66,Vector3.new(0,-1,0),height_pad)
+ connect(look_pad.InputBegan,function(i)
+  if i.UserInputType==Enum.UserInputType.Touch and not look_touch then look_touch=i end
+ end)
+ connect(Input.InputChanged,function(i)
+  if i==look_touch then touch_look=touch_look+Vector2.new(i.Delta.X,i.Delta.Y) end
+ end)
+ connect(Input.InputEnded,function(i)
+  touch_move[i]=nil
+  if i==look_touch then look_touch=nil end
+ end)
+ connect(Input.WindowFocusReleased,function()
+  table.clear(touch_move); look_touch=nil; touch_look=Vector2.zero
+ end)
+ local function restore_camera()
+  if camera_state then
+   local s=camera_state
+   if s.camera.Parent then
+    s.camera.CameraType=s.kind; s.camera.CameraSubject=s.subject
+    s.camera.CFrame=s.frame; s.camera.Focus=s.focus
+   end
+   Input.MouseBehavior=s.mouse
+   camera_state=nil; free_frame=nil
+  end
+ end
+ local function restore_zoom()
+  if zoom_state then
+   me.CameraMinZoomDistance=0
+   me.CameraMaxZoomDistance=zoom_state.max
+   me.CameraMinZoomDistance=zoom_state.min
+   me.CameraMode=zoom_state.mode
+   zoom_state=nil
+  end
+ end
+ local function restore_neck()
+  if neck_state then
+   if neck_state.joint.Parent then neck_state.joint.C0=neck_state.c0 end
+   neck_state=nil
+  end
+ end
+ local function restore_collisions()
+  for part,value in pairs(collisions) do
+   if part.Parent then part.CanCollide=value end
+   collisions[part]=nil
+  end
+ end
+ table.insert(hub.restores,function()
+  restore_camera(); restore_zoom(); restore_neck(); restore_collisions()
+ end)
+ connect(Run.Stepped,function()
+  local character=me.Character
+  if not cfg.noclip or not character then restore_collisions(); return end
+  for part,value in pairs(collisions) do
+   if not part:IsDescendantOf(character) then
+    if part.Parent then part.CanCollide=value end
+    collisions[part]=nil
+   end
+  end
+  for _,part in ipairs(character:GetDescendants()) do
+   if part:IsA('BasePart') then
+    if collisions[part]==nil then collisions[part]=part.CanCollide end
+    part.CanCollide=false
+   end
+  end
+ end)
+ local extra_render='OcelExtras_'..tostring(me.UserId)
+ Run:BindToRenderStep(extra_render,Enum.RenderPriority.Camera.Value+10,function(dt)
+  touch_controls.Visible=Input.TouchEnabled and cfg.freecam and not panel.Visible
+  if not touch_controls.Visible then
+   table.clear(touch_move); look_touch=nil; touch_look=Vector2.zero
+  end
+  local camera=workspace.CurrentCamera
+  if not camera then return end
+  if camera_state and camera_state.camera~=camera then restore_camera() end
+  if cfg.freecam then
+   if not camera_state then
+    camera_state={camera=camera,kind=camera.CameraType,subject=camera.CameraSubject,
+     frame=camera.CFrame,focus=camera.Focus,mouse=Input.MouseBehavior}
+    free_frame=camera.CFrame
+   end
+   camera.CameraType=Enum.CameraType.Scriptable
+   if not panel.Visible and not Input:GetFocusedTextBox() then
+    local rotating=Input:IsMouseButtonPressed(Enum.UserInputType.MouseButton2)
+    Input.MouseBehavior=rotating and Enum.MouseBehavior.LockCurrentPosition or camera_state.mouse
+    if rotating or touch_look.Magnitude>0 then
+     local delta=rotating and Input:GetMouseDelta() or touch_look
+     touch_look=Vector2.zero
+     local pitch,yaw=free_frame:ToOrientation()
+     free_frame=CFrame.new(free_frame.Position)*CFrame.fromOrientation(
+      math.clamp(pitch-delta.Y*.003,-math.rad(89),math.rad(89)),yaw-delta.X*.003,0)
+    end
+    local function key(k) return Input:IsKeyDown(k) and 1 or 0 end
+    local movement=Vector3.new(key(Enum.KeyCode.D)-key(Enum.KeyCode.A),
+     key(Enum.KeyCode.E)-key(Enum.KeyCode.Q),key(Enum.KeyCode.S)-key(Enum.KeyCode.W))
+    for _,direction in pairs(touch_move) do movement=movement+direction end
+    if movement.Magnitude>0 then
+     free_frame=free_frame+free_frame:VectorToWorldSpace(movement.Unit)*cfg.freecam_speed*math.min(dt,.1)
+    end
+   else Input.MouseBehavior=camera_state.mouse end
+   camera.CFrame=free_frame; camera.Focus=free_frame*CFrame.new(0,0,-20)
+  else restore_camera() end
+  if cfg.third_person and not cfg.freecam then
+   if not zoom_state then zoom_state={min=me.CameraMinZoomDistance,max=me.CameraMaxZoomDistance,mode=me.CameraMode} end
+   me.CameraMode=Enum.CameraMode.Classic
+   me.CameraMinZoomDistance=0
+   me.CameraMaxZoomDistance=cfg.third_distance
+   me.CameraMinZoomDistance=cfg.third_distance
+  else restore_zoom() end
+  local character=me.Character
+  if neck_state and (not character or not neck_state.joint:IsDescendantOf(character)) then restore_neck() end
+  if cfg.anti_aim and character then
+   if not neck_state then
+    for _,joint in ipairs(character:GetDescendants()) do
+     if joint:IsA('Motor6D') and joint.Name=='Neck' then
+      neck_state={joint=joint,c0=joint.C0}; break
+     end
+    end
+   end
+   if neck_state then
+    local joint=neck_state.joint
+    local axis=neck_state.c0:VectorToObjectSpace(Vector3.xAxis)
+    if joint.Part0 then axis=neck_state.c0:VectorToObjectSpace(joint.Part0.CFrame:VectorToObjectSpace(character:GetPivot().RightVector)) end
+    joint.C0=neck_state.c0*CFrame.fromAxisAngle(axis,-math.rad(cfg.head_pitch))
+   end
+  else restore_neck() end
+  if not cfg.trigger or cfg.freecam or panel.Visible or Input:GetFocusedTextBox() or os.clock()<next_shot then return end
+  local humanoid=character and character:FindFirstChildOfClass('Humanoid')
+  if not humanoid or humanoid.Health<=0 then return end
+  local params=RaycastParams.new()
+  params.FilterType=Enum.RaycastFilterType.Exclude
+  params.FilterDescendantsInstances={character,camera}
+  local ray=camera:ViewportPointToRay(camera.ViewportSize.X*.5,camera.ViewportSize.Y*.5)
+  local hit=workspace:Raycast(ray.Origin,ray.Direction*cfg.trigger_range,params)
+  if not hit then return end
+  local target
+  for _,player in ipairs(Players:GetPlayers()) do
+   if player~=me and player.Character and hit.Instance:IsDescendantOf(player.Character) then target=player; break end
+  end
+  if not target or not eligible(target,camera) then return end
+  next_shot=os.clock()+cfg.trigger_delay
+  local tool=character:FindFirstChildOfClass('Tool')
+  if tool then tool:Activate()
+  elseif type(mouse1click)=='function' then mouse1click() end
+ end)
+ table.insert(hub.restores,function() Run:UnbindFromRenderStep(extra_render) end)
+end
 function hub:Destroy()
  if not self.alive then return end; self.alive=false
  Run:UnbindFromRenderStep(render_name)
- Run:UnbindFromRenderStep(skin_ui.render_name)
  for _,c in ipairs(self.connections) do c:Disconnect() end
  for exports,original in pairs(self.hooks) do exports.Shoot=original end
  for _,restore in ipairs(self.restores) do restore() end
@@ -1351,7 +1364,6 @@ function hub:Destroy()
  for part,state in pairs(enemy_modified) do restore_part(part,state) end
  stop_farm_animation()
  restore_potato()
- skin_restore()
  restore_bright()
  for object in pairs(self.objects) do object:Destroy() end
  gui:Destroy()
